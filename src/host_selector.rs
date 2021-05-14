@@ -541,21 +541,6 @@ impl HostSelector {
     }
 
     #[inline]
-    pub(super) fn wrap_reader<'a, R: Read>(
-        &'a self,
-        reader: R,
-        host: &'a str,
-        timeout_power: usize,
-    ) -> ReaderWithTimeoutPower<'a, R> {
-        ReaderWithTimeoutPower {
-            reader,
-            host,
-            timeout_power,
-            hosts_updater: &self.hosts_updater,
-        }
-    }
-
-    #[inline]
     fn is_satisfied_with(&self, punished_info: &PunishedInfo) -> bool {
         self.host_punisher.is_available(punished_info)
             && self.hosts_updater.current_timeout_power.load(Relaxed) >= punished_info.timeout_power
@@ -597,15 +582,11 @@ impl<'a, R: Read> Read for ReaderWithTimeoutPower<'a, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::blocking::Client;
     use std::{
-        error::Error,
-        io::{copy as io_copy, sink, ErrorKind as IOErrorKind},
+        io::{ ErrorKind as IOErrorKind},
         sync::Mutex,
         thread::sleep,
     };
-    use tokio::{spawn, sync::oneshot::channel, task::spawn_blocking, time::sleep as delay_for};
-    use warp::{hyper::Body, path, reply::Response, Filter};
 
     #[test]
     fn test_hosts_updater() {
@@ -878,73 +859,5 @@ mod tests {
                 .len(),
             14
         );
-    }
-
-    #[test]
-    fn test_read_wrapper() -> Result<(), Box<dyn Error>> {
-        env_logger::try_init().ok();
-
-        let host_selector = HostSelectorBuilder::new(vec!["http://host1".to_owned()])
-            .base_timeout(Duration::from_millis(10))
-            .build();
-        struct AlwaysTimeoutReader;
-
-        impl Read for AlwaysTimeoutReader {
-            #[inline]
-            fn read(&mut self, _buf: &mut [u8]) -> IOResult<usize> {
-                Err(IOError::new(IOErrorKind::TimedOut, "always timed out"))
-            }
-        }
-        io_copy(
-            &mut host_selector.wrap_reader(AlwaysTimeoutReader, "http://host1", 0),
-            &mut sink(),
-        )
-        .unwrap_err();
-        assert_eq!(host_selector.select_host().timeout_power, 1);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_read_wrapper_for_reqwest() -> Result<(), Box<dyn Error>> {
-        env_logger::try_init().ok();
-
-        let host_selector = HostSelectorBuilder::new(vec!["http://host1".to_owned()])
-            .base_timeout(Duration::from_millis(10))
-            .build();
-
-        let routes = path!("file").map(move || {
-            let (mut sender, body) = Body::channel();
-            spawn(async move {
-                delay_for(Duration::from_secs(1)).await;
-                sender.send_data(vec![0u8; 0].into()).await.ok();
-            });
-            Response::new(body)
-        });
-        let (tx, rx) = channel();
-        let (addr, server) =
-            warp::serve(routes).bind_with_graceful_shutdown(([127, 0, 0, 1], 0), async move {
-                rx.await.ok();
-            });
-        let handler = spawn(server);
-
-        spawn_blocking(move || {
-            let response = Client::new()
-                .get(&format!("http://{}/file", addr))
-                .timeout(Duration::from_millis(100))
-                .send()
-                .unwrap();
-            io_copy(
-                &mut host_selector.wrap_reader(response, "http://host1", 0),
-                &mut sink(),
-            )
-            .unwrap_err();
-            assert_eq!(host_selector.select_host().timeout_power, 1);
-        })
-        .await?;
-        tx.send(()).ok();
-        handler.await.ok();
-
-        Ok(())
     }
 }
