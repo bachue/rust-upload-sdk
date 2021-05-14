@@ -2,6 +2,7 @@ use serde_json::{
     json, map::Keys as JSONMapKeys, value::Index as JSONValueIndex, Value as JSONValue,
 };
 use std::{
+    borrow::Cow,
     fmt,
     time::{Duration, SystemTime},
 };
@@ -161,6 +162,19 @@ impl fmt::Debug for UploadPolicy {
     }
 }
 
+impl<'p> From<&'p UploadPolicy> for Cow<'p, UploadPolicy> {
+    #[inline]
+    fn from(policy: &'p UploadPolicy) -> Self {
+        Cow::Borrowed(policy)
+    }
+}
+
+impl From<UploadPolicy> for Cow<'_, UploadPolicy> {
+    #[inline]
+    fn from(policy: UploadPolicy) -> Self {
+        Cow::Owned(policy)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
