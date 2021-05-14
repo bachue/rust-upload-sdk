@@ -21,7 +21,11 @@ toml = "0.5.8"
 log = "0.4.14"
 notify = "4.0.16"
 tap = "1.0.1"
+rand = "0.8.3"
+dashmap = "4.0.2"
 
 [dev-dependencies]
 env_logger = "0.8.3"
 tempfile = "3.2.0"
+tokio = { version = "1.5.0", features = ["rt", "macros", "time"] }
+warp = "0.3.1"

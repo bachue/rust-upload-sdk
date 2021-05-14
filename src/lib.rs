@@ -8,3 +8,4 @@
 //! 负责上传七牛对象
 
 mod config;
+mod host_selector;
