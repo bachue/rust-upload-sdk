@@ -9,3 +9,7 @@
 
 mod config;
 mod host_selector;
+mod query;
+mod upload_policy;
+
+use config::HTTP_CLIENT;

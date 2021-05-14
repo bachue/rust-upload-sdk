@@ -396,12 +396,12 @@ mod tests {
             spawn_blocking(move || -> IOResult<()> {
                 let host_selector =
                     HostSelector::builder(vec!["http://".to_owned() + &addr.to_string()]).build();
-                let io_urls = HostsQuerier::new(host_selector, 1).query_for_io_urls(
+                let up_urls = HostsQuerier::new(host_selector, 1).query_for_up_urls(
                     ACCESS_KEY,
                     BUCKET_NAME,
                     false,
                 )?;
-                assert_eq!(io_urls, vec!["http://up.qiniup.com".to_owned()]);
+                assert_eq!(up_urls, vec!["http://up.qiniup.com".to_owned()]);
                 Ok(())
             })
             .await??;
@@ -433,7 +433,7 @@ mod tests {
                             "hosts": [{
                                 "region": "z0",
                                 "ttl":1,
-                                "io": {
+                                "up": {
                                   "domains": [
                                     "up.qiniup.com"
                                   ]
@@ -450,19 +450,19 @@ mod tests {
                 let host_selector =
                     HostSelector::builder(vec!["http://".to_owned() + &addr.to_string()]).build();
                 let hosts_querier = HostsQuerier::new(host_selector, 1);
-                let mut io_urls =
-                    hosts_querier.query_for_io_urls(ACCESS_KEY, BUCKET_NAME, false)?;
-                assert_eq!(io_urls, vec!["http://up.qiniup.com".to_owned()]);
+                let mut up_urls =
+                    hosts_querier.query_for_up_urls(ACCESS_KEY, BUCKET_NAME, false)?;
+                assert_eq!(up_urls, vec!["http://up.qiniup.com".to_owned()]);
                 assert_eq!(counter.load(Relaxed), 1);
 
-                io_urls = hosts_querier.query_for_io_urls(ACCESS_KEY, BUCKET_NAME, false)?;
-                assert_eq!(io_urls, vec!["http://up.qiniup.com".to_owned()]);
+                up_urls = hosts_querier.query_for_up_urls(ACCESS_KEY, BUCKET_NAME, false)?;
+                assert_eq!(up_urls, vec!["http://up.qiniup.com".to_owned()]);
                 assert_eq!(counter.load(Relaxed), 1);
 
                 sleep(Duration::from_secs(1));
 
-                io_urls = hosts_querier.query_for_io_urls(ACCESS_KEY, BUCKET_NAME, false)?;
-                assert_eq!(io_urls, vec!["http://up.qiniup.com".to_owned()]);
+                up_urls = hosts_querier.query_for_up_urls(ACCESS_KEY, BUCKET_NAME, false)?;
+                assert_eq!(up_urls, vec!["http://up.qiniup.com".to_owned()]);
                 assert_eq!(counter.load(Relaxed), 1);
 
                 sleep(Duration::from_secs(1));
@@ -471,8 +471,8 @@ mod tests {
                 CACHE_MAP.clear();
                 load_cache().ok();
 
-                io_urls = hosts_querier.query_for_io_urls(ACCESS_KEY, BUCKET_NAME, false)?;
-                assert_eq!(io_urls, vec!["http://up.qiniup.com".to_owned()]);
+                up_urls = hosts_querier.query_for_up_urls(ACCESS_KEY, BUCKET_NAME, false)?;
+                assert_eq!(up_urls, vec!["http://up.qiniup.com".to_owned()]);
                 assert_eq!(counter.load(Relaxed), 2);
 
                 Ok(())
