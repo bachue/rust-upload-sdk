@@ -14,7 +14,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 #[non_exhaustive]
-pub enum ParseError {
+pub(super) enum ParseError {
     /// 上传凭证格式错误
     #[error("Invalid upload token format")]
     InvalidUploadTokenFormat,
@@ -28,7 +28,7 @@ pub enum ParseError {
     #[error("Credential get error: {0}")]
     CredentialGetError(#[from] IOError),
 }
-pub type ParseResult<T> = Result<T, ParseError>;
+pub(super) type ParseResult<T> = Result<T, ParseError>;
 
 pub(super) trait UploadTokenProvider: Any + fmt::Debug + Sync + Send {
     fn access_key(&self) -> ParseResult<Cow<str>>;

@@ -80,7 +80,7 @@ impl UploadPolicy {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct UploadPolicyBuilder {
+pub(super) struct UploadPolicyBuilder {
     inner: JSONValue,
 }
 

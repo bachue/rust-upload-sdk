@@ -10,9 +10,9 @@
 mod base64;
 mod config;
 mod credential;
+mod error;
 mod host_selector;
 mod query;
+mod upload_apis;
 mod upload_policy;
 mod upload_token;
-
-use config::HTTP_CLIENT;

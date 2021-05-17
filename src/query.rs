@@ -1,4 +1,5 @@
-use super::{host_selector::HostSelector, HTTP_CLIENT};
+use super::{config::HTTP_CLIENT, host_selector::HostSelector};
+use crate::error::{json_decode_response, HTTPCallError, HTTPCallResult};
 use dashmap::DashMap;
 use directories::BaseDirs;
 use once_cell::sync::Lazy;
@@ -125,7 +126,7 @@ impl HostsQuerier {
         ak: &str,
         bucket: &str,
         use_https: bool,
-    ) -> IOResult<Vec<String>> {
+    ) -> HTTPCallResult<Vec<String>> {
         Lazy::force(&CACHE_INIT);
 
         let response_body = self.query_for_domains(ak, bucket)?;
@@ -150,7 +151,7 @@ impl HostsQuerier {
         }
     }
 
-    fn query_for_domains(&self, ak: &str, bucket: &str) -> IOResult<ResponseBody> {
+    fn query_for_domains(&self, ak: &str, bucket: &str) -> HTTPCallResult<ResponseBody> {
         let cache_key = CacheKey::new(ak.into(), bucket.into());
 
         let mut modified = false;
@@ -201,13 +202,12 @@ fn query_for_domains_without_cache(
     bucket: impl AsRef<str>,
     uc_selector: &HostSelector,
     uc_tries: usize,
-) -> IOResult<CacheValue> {
+) -> HTTPCallResult<CacheValue> {
     return query_with_retry(uc_selector, uc_tries, |host, timeout_power, timeout| {
         let url = Url::parse_with_params(
             &format!("{}/v4/query", host),
             &[("ak", ak.as_ref()), ("bucket", bucket.as_ref())],
-        )
-        .map_err(|err| IOError::new(IOErrorKind::InvalidInput, err))?;
+        )?;
 
         HTTP_CLIENT
             .read()
@@ -220,20 +220,15 @@ fn query_for_domains_without_cache(
                     uc_selector.increase_timeout_power_by(host, timeout_power);
                 }
             })
-            .map_err(|err| IOError::new(IOErrorKind::ConnectionAborted, err))
+            .map_err(HTTPCallError::from)
             .and_then(|resp| {
                 if resp.status() != StatusCode::OK {
-                    Err(IOError::new(
-                        IOErrorKind::Other,
-                        format!("Unexpected status code {}", resp.status().as_u16()),
-                    ))
+                    Err(HTTPCallError::from(resp))
                 } else {
-                    let body = uc_selector.wrap_reader(resp, host, timeout_power);
-                    serde_json::from_reader::<_, ResponseBody>(body)
-                        .map_err(|err| IOError::new(IOErrorKind::BrokenPipe, err))
+                    json_decode_response(resp)
                 }
             })
-            .map(|body| {
+            .map(|body: ResponseBody| {
                 let min_ttl = body
                     .hosts
                     .iter()
@@ -250,8 +245,8 @@ fn query_for_domains_without_cache(
     fn query_with_retry<T>(
         uc_selector: &HostSelector,
         tries: usize,
-        mut for_each_host: impl FnMut(&str, usize, Duration) -> IOResult<T>,
-    ) -> IOResult<T> {
+        mut for_each_host: impl FnMut(&str, usize, Duration) -> HTTPCallResult<T>,
+    ) -> HTTPCallResult<T> {
         let mut last_error = None;
         for _ in 0..tries {
             let host_info = uc_selector.select_host();
@@ -362,7 +357,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_uc_query_v4() -> Result<(), Box<dyn Error>> {
+    async fn test_uc_query_v4() -> anyhow::Result<()> {
         env_logger::try_init().ok();
 
         CACHE_MAP.clear();
@@ -393,7 +388,7 @@ mod tests {
                 )
             });
         starts_with_server!(addr, routes, {
-            spawn_blocking(move || -> IOResult<()> {
+            spawn_blocking(move || -> anyhow::Result<()> {
                 let host_selector =
                     HostSelector::builder(vec!["http://".to_owned() + &addr.to_string()]).build();
                 let up_urls = HostsQuerier::new(host_selector, 1).query_for_up_urls(
@@ -410,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_uc_query_v4_with_cache() -> Result<(), Box<dyn Error>> {
+    async fn test_uc_query_v4_with_cache() -> anyhow::Result<()> {
         env_logger::try_init().ok();
 
         CACHE_MAP.clear();
@@ -446,7 +441,7 @@ mod tests {
                 })
         };
         starts_with_server!(addr, routes, {
-            spawn_blocking(move || -> IOResult<()> {
+            spawn_blocking(move || -> anyhow::Result<()> {
                 let host_selector =
                     HostSelector::builder(vec!["http://".to_owned() + &addr.to_string()]).build();
                 let hosts_querier = HostsQuerier::new(host_selector, 1);
