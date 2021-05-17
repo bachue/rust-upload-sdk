@@ -5,12 +5,15 @@ use reqwest::{
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Error as JSONError;
+use std::io::Error as IOError;
 use thiserror::Error;
 use url::ParseError as URLParseError;
 
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub(super) enum HTTPCallError {
+    #[error("IO error: {0}")]
+    IOError(#[from] IOError),
     #[error("Invalid URL error: {0}")]
     InvalidURL(#[from] URLParseError),
     #[error("HTTP Call error: {0}")]

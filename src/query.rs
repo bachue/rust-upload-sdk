@@ -324,9 +324,6 @@ mod tests {
     use serde::Serialize;
     use serde_json::json;
     use std::{
-        boxed::Box,
-        error::Error,
-        result::Result,
         sync::{
             atomic::{AtomicUsize, Ordering::Relaxed},
             Arc,

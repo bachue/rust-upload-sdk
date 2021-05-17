@@ -286,11 +286,9 @@ impl HostPunisher {
 
     #[inline]
     fn should_punish(&self, error: &HTTPCallError) -> bool {
-        if let Some(should_punish_func) = &self.should_punish_func {
-            should_punish_func(error)
-        } else {
-            true
-        }
+        self.should_punish_func
+            .as_ref()
+            .map_or(true, |should_punish_func| should_punish_func(error))
     }
 }
 
@@ -341,17 +339,14 @@ impl HostSelectorBuilder {
     }
 
     #[inline]
-    pub(super) fn update_callback(mut self, update_func: Option<UpdateFn>) -> Self {
-        self.update_func = update_func;
+    pub(super) fn update_callback(mut self, update_func: UpdateFn) -> Self {
+        self.update_func = Some(update_func);
         self
     }
 
     #[inline]
-    pub(super) fn should_punish_callback(
-        mut self,
-        should_punish_func: Option<ShouldPunishFn>,
-    ) -> Self {
-        self.should_punish_func = should_punish_func;
+    pub(super) fn should_punish_callback(mut self, should_punish_func: ShouldPunishFn) -> Self {
+        self.should_punish_func = Some(should_punish_func);
         self
     }
 
@@ -550,15 +545,8 @@ impl HostSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::{blocking::Client, StatusCode};
-    use std::{
-        error::Error,
-        io::{copy as io_copy, sink, ErrorKind as IOErrorKind},
-        sync::Mutex,
-        thread::sleep,
-    };
-    use tokio::{spawn, sync::oneshot::channel, task::spawn_blocking, time::sleep as delay_for};
-    use warp::{hyper::Body, path, reply::Response, Filter};
+    use reqwest::StatusCode;
+    use std::{sync::Mutex, thread::sleep};
 
     #[test]
     fn test_hosts_updater() {
@@ -597,14 +585,14 @@ mod tests {
         env_logger::try_init().ok();
 
         let host_selector = HostSelectorBuilder::new(vec![])
-            .update_callback(Some(Box::new(|| {
+            .update_callback(Box::new(|| {
                 Ok(vec![
                     "http://host1".to_owned(),
                     "http://host2".to_owned(),
                     "http://host4".to_owned(),
                     "http://host5".to_owned(),
                 ])
-            })))
+            }))
             .build();
         assert!([
             "http://host1".to_owned(),
@@ -661,13 +649,13 @@ mod tests {
                 "http://host2".to_owned(),
                 "http://host3".to_owned(),
             ])
-            .should_punish_callback(Some({
+            .should_punish_callback({
                 let punished_errs = punished_errs.to_owned();
                 Box::new(move |error| {
                     punished_errs.lock().unwrap().push(error.to_string());
                     true
                 })
-            }))
+            })
             .punish_duration(Duration::from_millis(500))
             .base_timeout(Duration::from_millis(100))
             .max_punished_times(2)
