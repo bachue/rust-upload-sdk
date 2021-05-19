@@ -16,3 +16,9 @@ mod query;
 mod upload_apis;
 mod upload_policy;
 mod upload_token;
+mod uploader;
+mod utils;
+
+pub use config::{Config, ConfigBuilder};
+pub use error::{HTTPCallError, HTTPCallResult};
+pub use uploader::{UploadProgressInfo, UploadRequestBuilder, Uploader, UploaderBuilder};

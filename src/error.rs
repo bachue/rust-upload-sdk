@@ -11,9 +11,9 @@ use url::ParseError as URLParseError;
 
 #[derive(Error, Debug)]
 #[non_exhaustive]
-pub(super) enum HTTPCallError {
-    #[error("IO error: {0}")]
-    IOError(#[from] IOError),
+pub enum HTTPCallError {
+    #[error("Local IO error: {0}")]
+    LocalIOError(#[from] IOError),
     #[error("Invalid URL error: {0}")]
     InvalidURL(#[from] URLParseError),
     #[error("HTTP Call error: {0}")]
@@ -33,7 +33,7 @@ pub(super) enum HTTPCallError {
         request_id: Option<HeaderValue>,
     },
 }
-pub(super) type HTTPCallResult<T> = Result<T, HTTPCallError>;
+pub type HTTPCallResult<T> = Result<T, HTTPCallError>;
 
 const X_REQ_ID: &str = "x-reqid";
 
@@ -66,14 +66,16 @@ impl From<Response> for HTTPCallError {
     }
 }
 
-pub(super) fn json_decode_response<T: DeserializeOwned>(response: Response) -> HTTPCallResult<T> {
+pub(super) fn json_decode_response<T: DeserializeOwned>(
+    response: Response,
+) -> HTTPCallResult<(T, Option<HeaderValue>)> {
     let status_code = response.status();
     let request_id = response
         .headers()
         .get(HeaderName::from_static(X_REQ_ID))
         .cloned();
     match serde_json::from_reader::<_, T>(response) {
-        Ok(body) => Ok(body),
+        Ok(body) => Ok((body, request_id)),
         Err(error) => Err(HTTPCallError::JSONDecodeError {
             status_code,
             request_id,

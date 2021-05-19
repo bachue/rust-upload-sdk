@@ -3,7 +3,7 @@ use crate::error::{json_decode_response, HTTPCallError, HTTPCallResult};
 use dashmap::DashMap;
 use directories::BaseDirs;
 use once_cell::sync::Lazy;
-use reqwest::StatusCode;
+use reqwest::{header::HeaderValue, StatusCode};
 use serde::{
     de::{Error as DeError, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -228,7 +228,7 @@ fn query_for_domains_without_cache(
                     json_decode_response(resp)
                 }
             })
-            .map(|body: ResponseBody| {
+            .map(|(body, _): (ResponseBody, Option<HeaderValue>)| {
                 let min_ttl = body
                     .hosts
                     .iter()

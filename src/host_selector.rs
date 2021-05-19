@@ -1,4 +1,4 @@
-use crate::error::HTTPCallError;
+use crate::error::{HTTPCallError, HTTPCallResult};
 use dashmap::DashMap;
 use log::{info, warn};
 use rand::{seq::SliceRandom, thread_rng};
@@ -6,7 +6,6 @@ use std::{
     cmp::{min, Ordering},
     collections::HashSet,
     fmt::{Debug, Formatter, Result as FormatResult},
-    io::Result as IOResult,
     ops::Deref,
     sync::{
         atomic::{AtomicUsize, Ordering::Relaxed},
@@ -120,7 +119,7 @@ impl<'a> Candidate<'a> {
     }
 }
 
-type UpdateFn = Box<dyn Fn() -> IOResult<Vec<String>> + Sync + Send + 'static>;
+type UpdateFn = Box<dyn Fn() -> HTTPCallResult<Vec<String>> + Sync + Send + 'static>;
 
 struct HostsUpdater {
     hosts: RwLock<Vec<String>>,

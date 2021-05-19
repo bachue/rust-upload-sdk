@@ -4,28 +4,39 @@ use crate::{
     error::{json_decode_response, HTTPCallError, HTTPCallResult},
     host_selector::{HostInfo, HostSelector},
     upload_token::UploadTokenProvider,
+    utils::PartReader,
 };
-use digest::generic_array::GenericArray;
 use log::{debug, error, info, warn};
-use md5::{Digest, Md5};
 use reqwest::{
-    blocking::{Body as ReqwestBody, RequestBuilder as HTTPRequestBuilder},
-    header::{HeaderName, AUTHORIZATION},
+    blocking::RequestBuilder as HTTPRequestBuilder,
+    header::{HeaderName, HeaderValue, AUTHORIZATION},
     Method, StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JSONValue;
-use std::{borrow::Cow, collections::HashMap, io::Read, sync::Arc, thread::sleep, time::Duration};
+use std::{borrow::Cow, collections::HashMap, thread::sleep, time::Duration};
 use tap::prelude::*;
 
+#[derive(Debug)]
 pub(super) struct UploadAPICaller {
-    inner: Arc<UploadAPICallerInner>,
+    up_selector: HostSelector,
+    upload_token_provider: Box<dyn UploadTokenProvider>,
+    tries: usize,
 }
 
-struct UploadAPICallerInner {
-    up_selector: HostSelector,
-    upload_token_provider: Arc<dyn UploadTokenProvider>,
-    tries: usize,
+impl UploadAPICaller {
+    #[inline]
+    pub(super) fn new(
+        up_selector: HostSelector,
+        upload_token_provider: Box<dyn UploadTokenProvider>,
+        tries: usize,
+    ) -> Self {
+        Self {
+            up_selector,
+            upload_token_provider,
+            tries,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -34,24 +45,77 @@ pub(super) struct InitPartsRequest<'a> {
     object_name: Option<&'a str>,
 }
 
+impl<'a> InitPartsRequest<'a> {
+    #[inline]
+    pub(super) fn new(bucket_name: &'a str, object_name: Option<&'a str>) -> Self {
+        Self {
+            bucket_name,
+            object_name,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct InitPartsResponse {
     response_body: InitPartsResponseBody,
 }
 
+impl InitPartsResponse {
+    #[inline]
+    pub(super) fn response_body(&self) -> &InitPartsResponseBody {
+        &self.response_body
+    }
+
+    #[inline]
+    pub(super) fn response_body_mut(&mut self) -> &mut InitPartsResponseBody {
+        &mut self.response_body
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct InitPartsResponseBody {
+    #[serde(rename(serialize = "uploadId", deserialize = "uploadId"))]
     upload_id: String,
 }
 
+impl InitPartsResponseBody {
+    #[inline]
+    pub(super) fn upload_id(&self) -> &str {
+        &self.upload_id
+    }
+
+    #[inline]
+    pub(super) fn upload_id_mut(&mut self) -> &mut String {
+        &mut self.upload_id
+    }
+}
+
 #[derive(Debug, Clone)]
-pub(super) struct UploadPartRequest<'a, GetReader: Fn() -> (Box<dyn Read + Send>, u64)> {
+pub(super) struct UploadPartRequest<'a> {
     bucket_name: &'a str,
     object_name: Option<&'a str>,
     upload_id: &'a str,
     part_number: u32,
-    part_reader: GetReader,
-    part_md5: GenericArray<u8, <Md5 as Digest>::OutputSize>,
+    part_reader: PartReader,
+}
+
+impl<'a> UploadPartRequest<'a> {
+    #[inline]
+    pub(super) fn new(
+        bucket_name: &'a str,
+        object_name: Option<&'a str>,
+        upload_id: &'a str,
+        part_number: u32,
+        part_reader: PartReader,
+    ) -> Self {
+        Self {
+            bucket_name,
+            object_name,
+            upload_id,
+            part_number,
+            part_reader,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,19 +124,73 @@ pub(super) struct UploadPartResponseBody {
     md5: String,
 }
 
+impl UploadPartResponseBody {
+    #[inline]
+    pub(super) fn etag(&self) -> &str {
+        &self.etag
+    }
+
+    #[inline]
+    pub(super) fn md5(&self) -> &str {
+        &self.md5
+    }
+
+    #[inline]
+    pub(super) fn etag_mut(&mut self) -> &mut String {
+        &mut self.etag
+    }
+
+    #[inline]
+    pub(super) fn md5_mut(&mut self) -> &mut String {
+        &mut self.md5
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct UploadPartResponse {
     response_body: UploadPartResponseBody,
+    uploaded: u64,
+}
+
+impl UploadPartResponse {
+    #[inline]
+    pub(super) fn response_body(&self) -> &UploadPartResponseBody {
+        &self.response_body
+    }
+
+    #[inline]
+    pub(super) fn response_body_mut(&mut self) -> &mut UploadPartResponseBody {
+        &mut self.response_body
+    }
+
+    #[inline]
+    pub(super) fn uploaded_mut(&mut self) -> &mut u64 {
+        &mut self.uploaded
+    }
+
+    #[inline]
+    pub(super) fn uploaded(&self) -> u64 {
+        self.uploaded
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct CompletePartInfo {
     etag: String,
+
+    #[serde(rename(serialize = "partNumber", deserialize = "partNumber"))]
     part_number: u32,
 }
 
+impl CompletePartInfo {
+    #[inline]
+    pub(super) fn new(etag: String, part_number: u32) -> Self {
+        Self { etag, part_number }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct CompletePartsRequestBody {
+struct CompletePartsRequestBody {
     parts: Vec<CompletePartInfo>,
     fname: Option<String>,
 
@@ -93,9 +211,47 @@ pub(super) struct CompletePartsRequest<'a> {
     request_body: CompletePartsRequestBody,
 }
 
+impl<'a> CompletePartsRequest<'a> {
+    pub(super) fn new(
+        bucket_name: &'a str,
+        object_name: Option<&'a str>,
+        upload_id: &'a str,
+        parts: Vec<CompletePartInfo>,
+        fname: Option<String>,
+        mime_type: Option<String>,
+        metadata: Option<HashMap<String, String>>,
+        custom_vars: Option<HashMap<String, String>>,
+    ) -> Self {
+        Self {
+            bucket_name,
+            object_name,
+            upload_id,
+            request_body: CompletePartsRequestBody {
+                parts,
+                fname,
+                mime_type,
+                metadata,
+                custom_vars,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct CompletePartsResponse {
     response_body: JSONValue,
+}
+
+impl CompletePartsResponse {
+    #[inline]
+    pub(super) fn response_body_mut(&mut self) -> &mut JSONValue {
+        &mut self.response_body
+    }
+
+    #[inline]
+    pub(super) fn response_body(&self) -> &JSONValue {
+        &self.response_body
+    }
 }
 
 const CONTENT_MD5: &str = "content-md5";
@@ -114,7 +270,7 @@ impl UploadAPICaller {
             ),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] init_parts url: {}", tries, url);
-                let response_body: InitPartsResponseBody = request_builder
+                let response_body = request_builder
                     .send()
                     .map_err(HTTPCallError::ReqwestError)
                     .tap_err(|err| self.increase_timeout_power_if_needed(chosen_info, err))
@@ -125,12 +281,15 @@ impl UploadAPICaller {
                             Err(resp.into())
                         }
                     })
-                    .tap_ok(|resp: &InitPartsResponseBody| {
-                        info!(
-                            "[{}] init_parts ok url: {}, upload_id: {}",
-                            tries, url, resp.upload_id
-                        );
-                    })
+                    .tap_ok(
+                        |(resp, request_id): &(InitPartsResponseBody, Option<HeaderValue>)| {
+                            info!(
+                                "[{}] init_parts ok url: {}, upload_id: {}, request_id: {:?}",
+                                tries, url, resp.upload_id, request_id,
+                            );
+                        },
+                    )
+                    .map(|(resp, _)| resp)
                     .tap_err(|err| {
                         warn!("[{}] init_parts error url: {}, error: {}", tries, url, err);
                     })?;
@@ -142,9 +301,9 @@ impl UploadAPICaller {
         )
     }
 
-    pub(super) fn upload_part<GetReader: Fn() -> (Box<dyn Read + Send>, u64)>(
+    pub(super) fn upload_part(
         &self,
-        request: &UploadPartRequest<GetReader>,
+        request: &UploadPartRequest,
     ) -> HTTPCallResult<UploadPartResponse> {
         self.with_retries(
             &Method::PUT,
@@ -157,16 +316,10 @@ impl UploadAPICaller {
             ),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] upload_part url: {}", tries, url);
-                let request_body = {
-                    let (body_reader, body_size) = (request.part_reader)();
-                    ReqwestBody::sized(body_reader, body_size)
-                };
-                let response_body: UploadPartResponseBody = request_builder
-                    .header(
-                        HeaderName::from_static(CONTENT_MD5),
-                        hex::encode(request.part_md5),
-                    )
-                    .body(request_body)
+                let (part_size, md5) = request.part_reader.md5()?;
+                let response_body = request_builder
+                    .header(HeaderName::from_static(CONTENT_MD5), hex::encode(md5))
+                    .body(request.part_reader.body(part_size))
                     .send()
                     .map_err(HTTPCallError::ReqwestError)
                     .tap_err(|err| self.increase_timeout_power_if_needed(chosen_info, err))
@@ -177,16 +330,22 @@ impl UploadAPICaller {
                             Err(resp.into())
                         }
                     })
-                    .tap_ok(|resp: &UploadPartResponseBody| {
-                        info!(
-                            "[{}] upload_part ok url: {}, etag: {}, md5: {}",
-                            tries, url, resp.etag, resp.md5,
-                        );
-                    })
+                    .tap_ok(
+                        |(resp, request_id): &(UploadPartResponseBody, Option<HeaderValue>)| {
+                            info!(
+                                "[{}] upload_part ok url: {}, etag: {}, md5: {}, request_id: {:?}",
+                                tries, url, resp.etag, resp.md5, request_id,
+                            );
+                        },
+                    )
+                    .map(|(resp, _)| resp)
                     .tap_err(|err| {
                         warn!("[{}] upload_part error url: {}, error: {}", tries, url, err);
                     })?;
-                Ok(UploadPartResponse { response_body })
+                Ok(UploadPartResponse {
+                    response_body,
+                    uploaded: part_size,
+                })
             },
             |err, url| {
                 error!("final failed upload_part url = {}, error: {:?}", url, err,);
@@ -208,7 +367,7 @@ impl UploadAPICaller {
             ),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] complete_parts url: {}", tries, url);
-                let response_body: JSONValue = request_builder
+                let response_body = request_builder
                     .json(&request.request_body)
                     .send()
                     .map_err(HTTPCallError::ReqwestError)
@@ -220,15 +379,17 @@ impl UploadAPICaller {
                             Err(resp.into())
                         }
                     })
-                    .tap_ok(|resp: &JSONValue| {
+                    .tap_ok(|(resp, request_id): &(JSONValue, Option<HeaderValue>)| {
                         info!(
-                            "[{}] complete_parts ok url: {}, hash: {:?}, key: {:?}",
+                            "[{}] complete_parts ok url: {}, hash: {:?}, key: {:?}, request_id: {:?}",
                             tries,
                             url,
                             resp.get("hash").and_then(|v| v.as_str()),
                             resp.get("key").and_then(|v| v.as_str()),
+                            request_id,
                         );
                     })
+                    .map(|(resp,_)|resp)
                     .tap_err(|err| {
                         warn!(
                             "[{}] complete_parts error url: {}, error: {}",
@@ -253,12 +414,12 @@ impl UploadAPICaller {
         mut for_each_url: impl FnMut(usize, HTTPRequestBuilder, &str, &HostInfo) -> HTTPCallResult<T>,
         final_error: impl FnOnce(&HTTPCallError, &str),
     ) -> HTTPCallResult<T> {
-        assert!(self.inner.tries > 0);
+        assert!(self.tries > 0);
 
-        for tries in 0..self.inner.tries {
+        for tries in 0..self.tries {
             sleep_before_retry(tries);
-            let last_try = self.inner.tries - tries <= 1;
-            let chosen_up_info = self.inner.up_selector.select_host();
+            let last_try = self.tries - tries <= 1;
+            let chosen_up_info = self.up_selector.select_host();
             let url = format!("{}/{}", chosen_up_info.host, path);
             let request_builder = HTTP_CLIENT
                 .read()
@@ -266,16 +427,16 @@ impl UploadAPICaller {
                 .request(method.to_owned(), url.to_owned())
                 .header(
                     AUTHORIZATION,
-                    &format!("UpToken {}", self.inner.upload_token_provider.to_string()?),
+                    &format!("UpToken {}", self.upload_token_provider.to_string()?),
                 )
                 .timeout(chosen_up_info.timeout);
             match for_each_url(tries, request_builder, &url, &chosen_up_info) {
                 Ok(result) => {
-                    self.inner.up_selector.reward(&chosen_up_info.host);
+                    self.up_selector.reward(&chosen_up_info.host);
                     return Ok(result);
                 }
                 Err(err) => {
-                    let punished = self.inner.up_selector.punish(&chosen_up_info.host, &err);
+                    let punished = self.up_selector.punish(&chosen_up_info.host, &err);
                     if !punished || last_try {
                         final_error(&err, url.as_str());
                         return Err(err);
@@ -297,7 +458,6 @@ impl UploadAPICaller {
     fn increase_timeout_power_if_needed(&self, chosen_info: &HostInfo, err: &HTTPCallError) {
         match err {
             HTTPCallError::ReqwestError(err) if err.is_timeout() => self
-                .inner
                 .up_selector
                 .increase_timeout_power_by(&chosen_info.host, chosen_info.timeout_power),
             _ => {}
@@ -317,15 +477,16 @@ fn encode_object_name(object_name: Option<&str>) -> Cow<'static, str> {
 mod tests {
     use crate::{
         credential::StaticCredentialProvider, host_selector::HostSelectorBuilder,
-        upload_token::BucketUploadTokenProvider,
+        upload_token::BucketUploadTokenProvider, utils::UploadSource,
     };
 
     use super::*;
+    use digest::Digest;
     use futures::channel::oneshot::channel;
+    use md5::Md5;
     use serde_json::json;
     use std::{
         boxed::Box,
-        io::Cursor,
         sync::{
             atomic::{AtomicUsize, Ordering::Relaxed},
             Arc,
@@ -370,7 +531,7 @@ mod tests {
                         .unwrap()
                         .starts_with("UpToken 1234567890:"));
                     Response::new(
-                        serde_json::to_vec(&json!({ "upload_id": "fakeuploadid" }))
+                        serde_json::to_vec(&json!({ "uploadId": "fakeuploadid" }))
                             .unwrap()
                             .into(),
                     )
@@ -378,21 +539,17 @@ mod tests {
             );
         starts_with_server!(addr, routes, {
             let caller = UploadAPICaller {
-                inner: Arc::new(UploadAPICallerInner {
-                    up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                    upload_token_provider: Arc::new(BucketUploadTokenProvider::new(
-                        "test-bucket",
-                        Duration::from_secs(60),
-                        Box::new(get_credential()),
-                    )),
-                    tries: 1,
-                }),
+                up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
+                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
+                    "test-bucket",
+                    Duration::from_secs(60),
+                    Box::new(get_credential()),
+                )),
+                tries: 1,
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
-                let response = caller.init_parts(&InitPartsRequest {
-                    bucket_name: "test-bucket",
-                    object_name: Some("test-key"),
-                })?;
+                let response =
+                    caller.init_parts(&InitPartsRequest::new("test-bucket", Some("test-key")))?;
                 assert_eq!(response.response_body.upload_id, "fakeuploadid");
                 Ok(())
             })
@@ -430,24 +587,19 @@ mod tests {
         };
         starts_with_server!(addr, routes, {
             let caller = UploadAPICaller {
-                inner: Arc::new(UploadAPICallerInner {
-                    up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                    upload_token_provider: Arc::new(BucketUploadTokenProvider::new(
-                        "test-bucket",
-                        Duration::from_secs(60),
-                        Box::new(get_credential()),
-                    )),
-                    tries: 3,
-                }),
+                up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
+                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
+                    "test-bucket",
+                    Duration::from_secs(60),
+                    Box::new(get_credential()),
+                )),
+                tries: 3,
             };
             {
                 let called_times = called_times.to_owned();
                 spawn_blocking::<_, HTTPCallResult<_>>(move || {
                     let err = caller
-                        .init_parts(&InitPartsRequest {
-                            bucket_name: "test-bucket",
-                            object_name: None,
-                        })
+                        .init_parts(&InitPartsRequest::new("test-bucket", None))
                         .unwrap_err();
                     match err {
                         HTTPCallError::StatusCodeError {
@@ -471,30 +623,25 @@ mod tests {
             called_times.store(0, Relaxed);
 
             let caller = UploadAPICaller {
-                inner: Arc::new(UploadAPICallerInner {
-                    up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)])
-                        .should_punish_callback(Box::new(|err| match err {
-                            HTTPCallError::ReqwestError(err) if err.is_builder() => false,
-                            HTTPCallError::StatusCodeError { status_code, .. } => {
-                                !status_code.is_client_error()
-                            }
-                            _ => true,
-                        }))
-                        .build(),
-                    upload_token_provider: Arc::new(BucketUploadTokenProvider::new(
-                        "test-bucket",
-                        Duration::from_secs(60),
-                        Box::new(get_credential()),
-                    )),
-                    tries: 3,
-                }),
+                up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)])
+                    .should_punish_callback(Box::new(|err| match err {
+                        HTTPCallError::ReqwestError(err) if err.is_builder() => false,
+                        HTTPCallError::StatusCodeError { status_code, .. } => {
+                            !status_code.is_client_error()
+                        }
+                        _ => true,
+                    }))
+                    .build(),
+                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
+                    "test-bucket",
+                    Duration::from_secs(60),
+                    Box::new(get_credential()),
+                )),
+                tries: 3,
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
                 let err = caller
-                    .init_parts(&InitPartsRequest {
-                        bucket_name: "test-bucket",
-                        object_name: None,
-                    })
+                    .init_parts(&InitPartsRequest::new("test-bucket", None))
                     .unwrap_err();
                 match err {
                     HTTPCallError::StatusCodeError {
@@ -563,15 +710,13 @@ mod tests {
         };
         starts_with_server!(addr, routes, {
             let caller = UploadAPICaller {
-                inner: Arc::new(UploadAPICallerInner {
-                    up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                    upload_token_provider: Arc::new(BucketUploadTokenProvider::new(
-                        "test-bucket",
-                        Duration::from_secs(60),
-                        Box::new(get_credential()),
-                    )),
-                    tries: 1,
-                }),
+                up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
+                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
+                    "test-bucket",
+                    Duration::from_secs(60),
+                    Box::new(get_credential()),
+                )),
+                tries: 1,
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
                 let response = caller.upload_part(&UploadPartRequest {
@@ -579,13 +724,11 @@ mod tests {
                     object_name: Some("test-key"),
                     upload_id: "fakeuploadid",
                     part_number: 1,
-                    part_reader: || {
-                        (
-                            Box::new(Cursor::new(PART_CONTENT)),
-                            PART_CONTENT.len() as u64,
-                        )
-                    },
-                    part_md5: md5.to_owned(),
+                    part_reader: PartReader::new(
+                        UploadSource::Data(Arc::new(PART_CONTENT.to_vec())),
+                        0,
+                        1 << 20,
+                    ),
                 })?;
                 assert_eq!(response.response_body.etag, "fakeetag_1");
                 assert_eq!(response.response_body.md5, hex::encode(md5));
@@ -626,15 +769,13 @@ mod tests {
             );
         starts_with_server!(addr, routes, {
             let caller = UploadAPICaller {
-                inner: Arc::new(UploadAPICallerInner {
-                    up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                    upload_token_provider: Arc::new(BucketUploadTokenProvider::new(
-                        "test-bucket",
-                        Duration::from_secs(60),
-                        Box::new(get_credential()),
-                    )),
-                    tries: 1,
-                }),
+                up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
+                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
+                    "test-bucket",
+                    Duration::from_secs(60),
+                    Box::new(get_credential()),
+                )),
+                tries: 1,
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
                 let response = caller.complete_parts(&CompletePartsRequest {
