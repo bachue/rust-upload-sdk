@@ -29,9 +29,9 @@ struct UploadAPICallerInner {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct InitPartsRequest {
-    bucket_name: String,
-    object_name: Option<String>,
+pub(super) struct InitPartsRequest<'a> {
+    bucket_name: &'a str,
+    object_name: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,10 +45,10 @@ pub(super) struct InitPartsResponseBody {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct UploadPartRequest<GetReader: Fn() -> (Box<dyn Read + Send>, u64)> {
-    bucket_name: String,
-    object_name: Option<String>,
-    upload_id: String,
+pub(super) struct UploadPartRequest<'a, GetReader: Fn() -> (Box<dyn Read + Send>, u64)> {
+    bucket_name: &'a str,
+    object_name: Option<&'a str>,
+    upload_id: &'a str,
     part_number: u32,
     part_reader: GetReader,
     part_md5: GenericArray<u8, <Md5 as Digest>::OutputSize>,
@@ -86,10 +86,10 @@ pub(super) struct CompletePartsRequestBody {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct CompletePartsRequest {
-    bucket_name: String,
-    object_name: Option<String>,
-    upload_id: String,
+pub(super) struct CompletePartsRequest<'a> {
+    bucket_name: &'a str,
+    object_name: Option<&'a str>,
+    upload_id: &'a str,
     request_body: CompletePartsRequestBody,
 }
 
@@ -103,14 +103,14 @@ const CONTENT_MD5: &str = "content-md5";
 impl UploadAPICaller {
     pub(super) fn init_parts(
         &self,
-        request: InitPartsRequest,
+        request: &InitPartsRequest,
     ) -> HTTPCallResult<InitPartsResponse> {
         self.with_retries(
             &Method::POST,
             &format!(
                 "buckets/{}/objects/{}/uploads",
                 request.bucket_name,
-                encode_object_name(request.object_name.as_ref().map(|s| s.as_str()))
+                encode_object_name(request.object_name)
             ),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] init_parts url: {}", tries, url);
@@ -144,14 +144,14 @@ impl UploadAPICaller {
 
     pub(super) fn upload_part<GetReader: Fn() -> (Box<dyn Read + Send>, u64)>(
         &self,
-        request: UploadPartRequest<GetReader>,
+        request: &UploadPartRequest<GetReader>,
     ) -> HTTPCallResult<UploadPartResponse> {
         self.with_retries(
             &Method::PUT,
             &format!(
                 "buckets/{}/objects/{}/uploads/{}/{}",
                 request.bucket_name,
-                encode_object_name(request.object_name.as_ref().map(|s| s.as_str())),
+                encode_object_name(request.object_name),
                 request.upload_id,
                 request.part_number,
             ),
@@ -196,14 +196,14 @@ impl UploadAPICaller {
 
     pub(super) fn complete_parts(
         &self,
-        request: CompletePartsRequest,
+        request: &CompletePartsRequest,
     ) -> HTTPCallResult<CompletePartsResponse> {
         self.with_retries(
             &Method::POST,
             &format!(
                 "buckets/{}/objects/{}/uploads/{}",
                 request.bucket_name,
-                encode_object_name(request.object_name.as_ref().map(|s| s.as_str())),
+                encode_object_name(request.object_name),
                 request.upload_id,
             ),
             |tries, request_builder, url, chosen_info| {
@@ -389,9 +389,9 @@ mod tests {
                 }),
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
-                let response = caller.init_parts(InitPartsRequest {
-                    bucket_name: "test-bucket".into(),
-                    object_name: Some("test-key".into()),
+                let response = caller.init_parts(&InitPartsRequest {
+                    bucket_name: "test-bucket",
+                    object_name: Some("test-key"),
                 })?;
                 assert_eq!(response.response_body.upload_id, "fakeuploadid");
                 Ok(())
@@ -444,8 +444,8 @@ mod tests {
                 let called_times = called_times.to_owned();
                 spawn_blocking::<_, HTTPCallResult<_>>(move || {
                     let err = caller
-                        .init_parts(InitPartsRequest {
-                            bucket_name: "test-bucket".into(),
+                        .init_parts(&InitPartsRequest {
+                            bucket_name: "test-bucket",
                             object_name: None,
                         })
                         .unwrap_err();
@@ -456,7 +456,10 @@ mod tests {
                             ..
                         } => {
                             assert_eq!(status_code, StatusCode::UNAUTHORIZED);
-                            assert_eq!(error_message, Some("bad token".into()));
+                            assert_eq!(
+                                error_message.as_ref().map(|s| s.as_ref()),
+                                Some("bad token")
+                            );
                         }
                         _ => unreachable!(),
                     }
@@ -488,8 +491,8 @@ mod tests {
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
                 let err = caller
-                    .init_parts(InitPartsRequest {
-                        bucket_name: "test-bucket".into(),
+                    .init_parts(&InitPartsRequest {
+                        bucket_name: "test-bucket",
                         object_name: None,
                     })
                     .unwrap_err();
@@ -500,7 +503,10 @@ mod tests {
                         ..
                     } => {
                         assert_eq!(status_code, StatusCode::UNAUTHORIZED);
-                        assert_eq!(error_message, Some("bad token".into()));
+                        assert_eq!(
+                            error_message.as_ref().map(|s| s.as_ref()),
+                            Some("bad token")
+                        );
                     }
                     _ => unreachable!(),
                 }
@@ -568,10 +574,10 @@ mod tests {
                 }),
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
-                let response = caller.upload_part(UploadPartRequest {
-                    bucket_name: "test-bucket".into(),
-                    object_name: Some("test-key".into()),
-                    upload_id: "fakeuploadid".into(),
+                let response = caller.upload_part(&UploadPartRequest {
+                    bucket_name: "test-bucket",
+                    object_name: Some("test-key"),
+                    upload_id: "fakeuploadid",
                     part_number: 1,
                     part_reader: || {
                         (
@@ -631,10 +637,10 @@ mod tests {
                 }),
             };
             spawn_blocking::<_, HTTPCallResult<_>>(move || {
-                let response = caller.complete_parts(CompletePartsRequest {
-                    bucket_name: "test-bucket".into(),
-                    object_name: Some("~".into()),
-                    upload_id: "fakeuploadid".into(),
+                let response = caller.complete_parts(&CompletePartsRequest {
+                    bucket_name: "test-bucket",
+                    object_name: Some("~"),
+                    upload_id: "fakeuploadid",
                     request_body: CompletePartsRequestBody {
                         parts: vec![
                             CompletePartInfo {
