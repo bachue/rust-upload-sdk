@@ -9,13 +9,13 @@ use digest::generic_array::GenericArray;
 use log::{debug, error, info, warn};
 use md5::{Digest, Md5};
 use reqwest::{
-    blocking::RequestBuilder as HTTPRequestBuilder,
+    blocking::{Body as ReqwestBody, RequestBuilder as HTTPRequestBuilder},
     header::{HeaderName, AUTHORIZATION},
     Method, StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JSONValue;
-use std::{borrow::Cow, collections::HashMap, sync::Arc, thread::sleep, time::Duration};
+use std::{borrow::Cow, collections::HashMap, io::Read, sync::Arc, thread::sleep, time::Duration};
 use tap::prelude::*;
 
 pub(super) struct UploadAPICaller {
@@ -45,12 +45,12 @@ pub(super) struct InitPartsResponseBody {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct UploadPartRequest {
+pub(super) struct UploadPartRequest<GetReader: Fn() -> (Box<dyn Read + Send>, u64)> {
     bucket_name: String,
     object_name: Option<String>,
     upload_id: String,
     part_number: u32,
-    part_content: Vec<u8>,
+    part_reader: GetReader,
     part_md5: GenericArray<u8, <Md5 as Digest>::OutputSize>,
 }
 
@@ -142,9 +142,9 @@ impl UploadAPICaller {
         )
     }
 
-    pub(super) fn upload_part(
+    pub(super) fn upload_part<GetReader: Fn() -> (Box<dyn Read + Send>, u64)>(
         &self,
-        request: UploadPartRequest,
+        request: UploadPartRequest<GetReader>,
     ) -> HTTPCallResult<UploadPartResponse> {
         self.with_retries(
             &Method::PUT,
@@ -157,12 +157,16 @@ impl UploadAPICaller {
             ),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] upload_part url: {}", tries, url);
+                let request_body = {
+                    let (body_reader, body_size) = (request.part_reader)();
+                    ReqwestBody::sized(body_reader, body_size)
+                };
                 let response_body: UploadPartResponseBody = request_builder
                     .header(
                         HeaderName::from_static(CONTENT_MD5),
                         hex::encode(request.part_md5),
                     )
-                    .body(request.part_content.to_owned())
+                    .body(request_body)
                     .send()
                     .map_err(HTTPCallError::ReqwestError)
                     .tap_err(|err| self.increase_timeout_power_if_needed(chosen_info, err))
@@ -321,6 +325,7 @@ mod tests {
     use serde_json::json;
     use std::{
         boxed::Box,
+        io::Cursor,
         sync::{
             atomic::{AtomicUsize, Ordering::Relaxed},
             Arc,
@@ -511,9 +516,11 @@ mod tests {
     #[tokio::test]
     async fn test_upload_part() -> anyhow::Result<()> {
         env_logger::try_init().ok();
+
+        const PART_CONTENT: &[u8] = b"01234567890";
         let md5 = {
             let mut hasher = Md5::new();
-            hasher.update(b"01234567890");
+            hasher.update(PART_CONTENT);
             hasher.finalize()
         };
 
@@ -566,7 +573,12 @@ mod tests {
                     object_name: Some("test-key".into()),
                     upload_id: "fakeuploadid".into(),
                     part_number: 1,
-                    part_content: b"01234567890".to_vec(),
+                    part_reader: || {
+                        (
+                            Box::new(Cursor::new(PART_CONTENT)),
+                            PART_CONTENT.len() as u64,
+                        )
+                    },
                     part_md5: md5.to_owned(),
                 })?;
                 assert_eq!(response.response_body.etag, "fakeetag_1");
