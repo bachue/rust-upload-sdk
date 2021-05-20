@@ -1,11 +1,11 @@
 use crate::{
     credential::{CredentialProvider, StaticCredentialProvider},
-    error::{HTTPCallError, HTTPCallResult},
+    error::{HttpCallError, HttpCallResult},
     host_selector::HostSelector,
     query::HostsQuerier,
     upload_apis::{
-        CompletePartInfo, CompletePartsRequest, FormUploadRequest, InitPartsRequest,
-        UploadAPICaller, UploadPartRequest,
+        CompletePartInfo, CompletePartsRequest, CompletePartsRequestBody, FormUploadRequest,
+        InitPartsRequest, UploadApiCaller, UploadPartRequest,
     },
     upload_token::BucketUploadTokenProvider,
     utils::UploadSource,
@@ -22,7 +22,7 @@ pub struct Uploader {
 
 #[derive(Debug)]
 struct UploaderInner {
-    api_caller: UploadAPICaller,
+    api_caller: UploadApiCaller,
     bucket_name: String,
 }
 
@@ -177,8 +177,8 @@ impl UploaderBuilder {
                     }
                 }))
                 .should_punish_callback(Box::new(|err| match err {
-                    HTTPCallError::ReqwestError(err) if err.is_builder() => false,
-                    HTTPCallError::StatusCodeError(err) => {
+                    HttpCallError::ReqwestError(err) if err.is_builder() => false,
+                    HttpCallError::StatusCodeError(err) => {
                         !is_client_error_status(err.status_code())
                     }
                     _ => true,
@@ -193,7 +193,7 @@ impl UploaderBuilder {
 
         Uploader {
             inner: Arc::new(UploaderInner {
-                api_caller: UploadAPICaller::new(
+                api_caller: UploadApiCaller::new(
                     up_selector,
                     Box::new(BucketUploadTokenProvider::new(
                         self.bucket.to_owned(),
@@ -211,7 +211,7 @@ impl UploaderBuilder {
 impl Uploader {
     /// 上传文件
     #[inline]
-    pub fn upload_file<'a>(&'a self, file: File) -> UploadRequestBuilder<'a> {
+    pub fn upload_file(&self, file: File) -> UploadRequestBuilder {
         UploadRequestBuilder {
             uploader: self,
             source: UploadSource::File(Arc::new(file)),
@@ -236,7 +236,7 @@ pub struct UploadRequestBuilder<'a> {
     mime_type: Option<String>,
     metadata: Option<HashMap<String, String>>,
     custom_vars: Option<HashMap<String, String>>,
-    upload_progress_callback: Option<Box<dyn Fn(&UploadProgressInfo) -> HTTPCallResult<()>>>,
+    upload_progress_callback: Option<Box<dyn Fn(&UploadProgressInfo) -> HttpCallResult<()>>>,
 }
 
 impl<'a> UploadRequestBuilder<'a> {
@@ -318,7 +318,7 @@ impl<'a> UploadRequestBuilder<'a> {
     #[inline]
     pub fn upload_progress_callback(
         mut self,
-        upload_progress_callback: Box<dyn Fn(&UploadProgressInfo) -> HTTPCallResult<()>>,
+        upload_progress_callback: Box<dyn Fn(&UploadProgressInfo) -> HttpCallResult<()>>,
     ) -> Self {
         self.upload_progress_callback = Some(upload_progress_callback);
         self
@@ -326,7 +326,7 @@ impl<'a> UploadRequestBuilder<'a> {
 
     /// 开始上传
     #[inline]
-    pub fn start(self) -> HTTPCallResult<UploadResult> {
+    pub fn start(self) -> HttpCallResult<UploadResult> {
         if self.source.len()? <= self.part_size {
             self.start_form_upload()
         } else {
@@ -334,7 +334,7 @@ impl<'a> UploadRequestBuilder<'a> {
         }
     }
 
-    fn start_form_upload(self) -> HTTPCallResult<UploadResult> {
+    fn start_form_upload(self) -> HttpCallResult<UploadResult> {
         let mut form_upload_result =
             self.uploader
                 .inner
@@ -352,7 +352,7 @@ impl<'a> UploadRequestBuilder<'a> {
         })
     }
 
-    fn start_resumable_upload(self) -> HTTPCallResult<UploadResult> {
+    fn start_resumable_upload(self) -> HttpCallResult<UploadResult> {
         let init_parts_response =
             self.uploader
                 .inner
@@ -399,11 +399,13 @@ impl<'a> UploadRequestBuilder<'a> {
                     self.uploader.inner.bucket_name.as_ref(),
                     self.object_name.as_deref(),
                     init_parts_response.response_body().upload_id(),
-                    completed_parts,
-                    self.file_name,
-                    self.mime_type,
-                    self.metadata,
-                    self.custom_vars,
+                    CompletePartsRequestBody::new(
+                        completed_parts,
+                        self.file_name,
+                        self.mime_type,
+                        self.metadata,
+                        self.custom_vars,
+                    ),
                 ))?;
         Ok(UploadResult {
             response_body: take(complete_parts_result.response_body_mut()),

@@ -12,14 +12,14 @@ use url::ParseError as URLParseError;
 /// HTTP 调用错误
 #[derive(Error, Debug)]
 #[non_exhaustive]
-pub enum HTTPCallError {
+pub enum HttpCallError {
     /// 本地 IO 错误
     #[error("Local IO error: {0}")]
-    LocalIOError(#[from] IOError),
+    LocalIoError(#[from] IOError),
 
     /// 非法的 URL
     #[error("Invalid URL error: {0}")]
-    InvalidURL(#[from] URLParseError),
+    InvalidUrl(#[from] URLParseError),
 
     /// Reqwest 库调用错误
     #[error("HTTP Call error: {0}")]
@@ -27,24 +27,36 @@ pub enum HTTPCallError {
 
     /// JSON 解析错误
     #[error("JSON decode error: {0}")]
-    JSONDecodeError(#[from] JSONDecodeError),
+    JsonDecodeError(#[from] JsonDecodeError),
 
     /// 状态码错误
     #[error("HTTP Status Code error: {0}")]
     StatusCodeError(#[from] StatusCodeError),
 }
 /// HTTP 调用结果
-pub type HTTPCallResult<T> = Result<T, HTTPCallError>;
+pub type HttpCallResult<T> = Result<T, HttpCallError>;
 
 /// JSON 解析错误
 #[derive(Debug)]
-pub struct JSONDecodeError {
+pub struct JsonDecodeError {
     error: JSONError,
     status_code: StatusCode,
     request_id: Option<HeaderValue>,
 }
 
-impl JSONDecodeError {
+impl JsonDecodeError {
+    pub(super) fn new(
+        error: JSONError,
+        status_code: StatusCode,
+        request_id: Option<HeaderValue>,
+    ) -> Self {
+        Self {
+            error,
+            status_code,
+            request_id,
+        }
+    }
+
     #[inline]
     pub fn error(&self) -> &JSONError {
         &self.error
@@ -61,7 +73,7 @@ impl JSONDecodeError {
     }
 }
 
-impl fmt::Display for JSONDecodeError {
+impl fmt::Display for JsonDecodeError {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -76,7 +88,7 @@ impl fmt::Display for JSONDecodeError {
     }
 }
 
-impl Error for JSONDecodeError {
+impl Error for JsonDecodeError {
     #[inline]
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.error)
@@ -92,6 +104,19 @@ pub struct StatusCodeError {
 }
 
 impl StatusCodeError {
+    #[inline]
+    pub(super) fn new(
+        status_code: StatusCode,
+        error_message: Option<Box<str>>,
+        request_id: Option<HeaderValue>,
+    ) -> Self {
+        Self {
+            status_code,
+            error_message,
+            request_id,
+        }
+    }
+
     #[inline]
     pub fn status_code(&self) -> StatusCode {
         self.status_code
@@ -126,7 +151,7 @@ impl Error for StatusCodeError {}
 
 const X_REQ_ID: &str = "x-reqid";
 
-impl From<Response> for HTTPCallError {
+impl From<Response> for HttpCallError {
     #[inline]
     fn from(response: Response) -> Self {
         #[derive(Debug, Clone, Deserialize)]
@@ -146,10 +171,10 @@ impl From<Response> for HTTPCallError {
                 request_id,
                 error_message: error_body.error,
             }),
-            Err(error) => Self::JSONDecodeError(JSONDecodeError {
+            Err(error) => Self::JsonDecodeError(JsonDecodeError {
+                error,
                 status_code,
                 request_id,
-                error,
             }),
         }
     }
@@ -157,7 +182,7 @@ impl From<Response> for HTTPCallError {
 
 pub(super) fn json_decode_response<T: DeserializeOwned>(
     response: Response,
-) -> HTTPCallResult<(T, Option<HeaderValue>)> {
+) -> HttpCallResult<(T, Option<HeaderValue>)> {
     let status_code = response.status();
     let request_id = response
         .headers()
@@ -165,10 +190,10 @@ pub(super) fn json_decode_response<T: DeserializeOwned>(
         .cloned();
     match serde_json::from_reader::<_, T>(response) {
         Ok(body) => Ok((body, request_id)),
-        Err(error) => Err(HTTPCallError::JSONDecodeError(JSONDecodeError {
+        Err(error) => Err(HttpCallError::JsonDecodeError(JsonDecodeError {
+            error,
             status_code,
             request_id,
-            error,
         })),
     }
 }

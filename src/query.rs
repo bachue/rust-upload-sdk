@@ -1,5 +1,5 @@
 use super::{config::HTTP_CLIENT, host_selector::HostSelector};
-use crate::error::{json_decode_response, HTTPCallError, HTTPCallResult};
+use crate::error::{json_decode_response, HttpCallError, HttpCallResult};
 use dashmap::DashMap;
 use directories::BaseDirs;
 use once_cell::sync::Lazy;
@@ -126,7 +126,7 @@ impl HostsQuerier {
         ak: &str,
         bucket: &str,
         use_https: bool,
-    ) -> HTTPCallResult<Vec<String>> {
+    ) -> HttpCallResult<Vec<String>> {
         Lazy::force(&CACHE_INIT);
 
         let response_body = self.query_for_domains(ak, bucket)?;
@@ -151,7 +151,7 @@ impl HostsQuerier {
         }
     }
 
-    fn query_for_domains(&self, ak: &str, bucket: &str) -> HTTPCallResult<ResponseBody> {
+    fn query_for_domains(&self, ak: &str, bucket: &str) -> HttpCallResult<ResponseBody> {
         let cache_key = CacheKey::new(ak.into(), bucket.into());
 
         let mut modified = false;
@@ -202,7 +202,7 @@ fn query_for_domains_without_cache(
     bucket: impl AsRef<str>,
     uc_selector: &HostSelector,
     uc_tries: usize,
-) -> HTTPCallResult<CacheValue> {
+) -> HttpCallResult<CacheValue> {
     return query_with_retry(uc_selector, uc_tries, |host, timeout_power, timeout| {
         let url = Url::parse_with_params(
             &format!("{}/v4/query", host),
@@ -220,10 +220,10 @@ fn query_for_domains_without_cache(
                     uc_selector.increase_timeout_power_by(host, timeout_power);
                 }
             })
-            .map_err(HTTPCallError::from)
+            .map_err(HttpCallError::from)
             .and_then(|resp| {
                 if resp.status() != StatusCode::OK {
-                    Err(HTTPCallError::from(resp))
+                    Err(HttpCallError::from(resp))
                 } else {
                     json_decode_response(resp)
                 }
@@ -245,8 +245,8 @@ fn query_for_domains_without_cache(
     fn query_with_retry<T>(
         uc_selector: &HostSelector,
         tries: usize,
-        mut for_each_host: impl FnMut(&str, usize, Duration) -> HTTPCallResult<T>,
-    ) -> HTTPCallResult<T> {
+        mut for_each_host: impl FnMut(&str, usize, Duration) -> HttpCallResult<T>,
+    ) -> HttpCallResult<T> {
         let mut last_error = None;
         for _ in 0..tries {
             let host_info = uc_selector.select_host();

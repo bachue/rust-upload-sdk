@@ -1,4 +1,4 @@
-use crate::error::{HTTPCallError, HTTPCallResult};
+use crate::error::{HttpCallError, HttpCallResult};
 use dashmap::DashMap;
 use log::{info, warn};
 use rand::{seq::SliceRandom, thread_rng};
@@ -119,7 +119,7 @@ impl<'a> Candidate<'a> {
     }
 }
 
-type UpdateFn = Box<dyn Fn() -> HTTPCallResult<Vec<String>> + Sync + Send + 'static>;
+type UpdateFn = Box<dyn Fn() -> HttpCallResult<Vec<String>> + Sync + Send + 'static>;
 
 struct HostsUpdater {
     hosts: RwLock<Vec<String>>,
@@ -245,7 +245,7 @@ impl Debug for HostsUpdater {
     }
 }
 
-type ShouldPunishFn = Box<dyn Fn(&HTTPCallError) -> bool + Send + Sync + 'static>;
+type ShouldPunishFn = Box<dyn Fn(&HttpCallError) -> bool + Send + Sync + 'static>;
 struct HostPunisher {
     should_punish_func: Option<ShouldPunishFn>,
     punish_duration: Duration,
@@ -284,7 +284,7 @@ impl HostPunisher {
     }
 
     #[inline]
-    fn should_punish(&self, error: &HTTPCallError) -> bool {
+    fn should_punish(&self, error: &HttpCallError) -> bool {
         self.should_punish_func
             .as_ref()
             .map_or(true, |should_punish_func| should_punish_func(error))
@@ -512,7 +512,7 @@ impl HostSelector {
         }
     }
 
-    pub(super) fn punish(&self, host: &str, error: &HTTPCallError) -> bool {
+    pub(super) fn punish(&self, host: &str, error: &HttpCallError) -> bool {
         if self.host_punisher.should_punish(error) {
             if let Some(mut punished_info) = self.hosts_updater.hosts_map.get_mut(host) {
                 punished_info.continuous_punished_times += 1;
@@ -543,6 +543,8 @@ impl HostSelector {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::StatusCodeError;
+
     use super::*;
     use reqwest::StatusCode;
     use std::{sync::Mutex, thread::sleep};
@@ -670,11 +672,11 @@ mod tests {
             host_selector.increase_timeout_power_by("http://host1", 0);
             host_selector.punish(
                 "http://host1",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err1".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err1".into()),
+                    None,
+                )),
             );
             {
                 let host_info = host_selector.select_host();
@@ -683,11 +685,11 @@ mod tests {
             }
             host_selector.punish(
                 "http://host1",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err2".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err2".into()),
+                    None,
+                )),
             );
             {
                 let host_info = host_selector.select_host();
@@ -702,39 +704,39 @@ mod tests {
             host_selector.increase_timeout_power_by("http://host1", 1);
             host_selector.punish(
                 "http://host1",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err3".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err3".into()),
+                    None,
+                )),
             );
             assert_eq!(host_selector.select_host().host, "http://host3".to_owned());
             host_selector.punish(
                 "http://host2",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err4".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err4".into()),
+                    None,
+                )),
             );
             assert_eq!(host_selector.select_host().host, "http://host2".to_owned());
             host_selector.increase_timeout_power_by("http://host2", 0);
             host_selector.punish(
                 "http://host2",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err5".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err5".into()),
+                    None,
+                )),
             );
             host_selector.increase_timeout_power_by("http://host3", 1);
             host_selector.punish(
                 "http://host3",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err6".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err6".into()),
+                    None,
+                )),
             );
             {
                 let host_info = host_selector.select_host();
@@ -759,11 +761,11 @@ mod tests {
             host_selector.increase_timeout_power_by("http://host3", 2);
             host_selector.punish(
                 "http://host3",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err7".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err7".into()),
+                    None,
+                )),
             );
             {
                 let host_info = host_selector.select_host();
@@ -820,52 +822,52 @@ mod tests {
             host_selector.increase_timeout_power_by("http://host3", 2);
             host_selector.punish(
                 "http://host3",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err8".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err8".into()),
+                    None,
+                )),
             );
             host_selector.punish(
                 "http://host3",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err9".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err9".into()),
+                    None,
+                )),
             );
             host_selector.punish(
                 "http://host3",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err10".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err10".into()),
+                    None,
+                )),
             );
             host_selector.increase_timeout_power_by("http://host1", 3);
             host_selector.punish(
                 "http://host1",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err11".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err11".into()),
+                    None,
+                )),
             );
             host_selector.punish(
                 "http://host1",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err12".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err12".into()),
+                    None,
+                )),
             );
             host_selector.punish(
                 "http://host1",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err13".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err13".into()),
+                    None,
+                )),
             );
             {
                 let host_info = host_selector.select_host();
@@ -880,11 +882,11 @@ mod tests {
             host_selector.increase_timeout_power_by("http://host3", 3);
             host_selector.punish(
                 "http://host3",
-                &HTTPCallError::StatusCodeError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("err14".into()),
-                    request_id: None,
-                },
+                &HttpCallError::StatusCodeError(StatusCodeError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some("err14".into()),
+                    None,
+                )),
             );
             {
                 let host_info = host_selector.select_host();

@@ -23,7 +23,7 @@ pub(super) enum ParseError {
     Base64DecodeError(#[from] base64::DecodeError),
     /// 上传凭证 JSON 解析错误
     #[error("JSON decode error: {0}")]
-    JSONDecodeError(#[from] serde_json::Error),
+    JsonDecodeError(#[from] serde_json::Error),
     /// 上传凭证获取认证信息错误
     #[error("Credential get error: {0}")]
     CredentialGetError(#[from] IOError),
@@ -71,7 +71,7 @@ impl UploadTokenProvider for StaticUploadTokenProvider {
                 self.upload_token
                     .find(':')
                     .map(|i| self.upload_token.split_at(i).0.to_owned().into())
-                    .ok_or_else(|| ParseError::InvalidUploadTokenFormat)
+                    .ok_or(ParseError::InvalidUploadTokenFormat)
             })
             .map(|access_key| access_key.as_ref().into())
     }
@@ -86,10 +86,7 @@ impl UploadTokenProvider for StaticUploadTokenProvider {
                     .ok_or(ParseError::InvalidUploadTokenFormat)?;
                 let decoded_policy = base64::decode(encoded_policy.as_bytes())
                     .map_err(ParseError::Base64DecodeError)?;
-                Ok(
-                    UploadPolicy::from_json(&decoded_policy)
-                        .map_err(ParseError::JSONDecodeError)?,
-                )
+                UploadPolicy::from_json(&decoded_policy).map_err(ParseError::JsonDecodeError)
             })
             .map(|policy| policy.into())
     }
