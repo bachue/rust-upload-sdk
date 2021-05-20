@@ -10,6 +10,7 @@ use crate::{
     upload_token::BucketUploadTokenProvider,
     utils::UploadSource,
 };
+use reqwest::StatusCode;
 use serde_json::Value as JSONValue;
 use std::{collections::HashMap, fs::File, mem::take, sync::Arc, time::Duration};
 
@@ -44,6 +45,7 @@ pub struct UploaderBuilder {
 }
 
 impl UploaderBuilder {
+    /// 新建上传构建器
     #[inline]
     pub fn new(
         access_key: impl Into<String>,
@@ -71,66 +73,81 @@ impl UploaderBuilder {
         }
     }
 
+    /// 设置七牛 UP 服务器 URL 列表
     #[inline]
     pub fn up_urls(mut self, up_urls: Vec<String>) -> Self {
         self.up_urls = up_urls;
         self
     }
 
+    /// 设置七牛 UC 服务器 URL 列表
     #[inline]
     pub fn uc_urls(mut self, uc_urls: Vec<String>) -> Self {
         self.uc_urls = uc_urls;
         self
     }
 
+    /// 设置对象上传最大尝试次数
     #[inline]
     pub fn up_tries(mut self, up_tries: usize) -> Self {
         self.up_tries = up_tries;
         self
     }
 
+    /// 设置 UC 查询的最大尝试次数
     #[inline]
     pub fn uc_tries(mut self, uc_tries: usize) -> Self {
         self.uc_tries = uc_tries;
         self
     }
 
+    /// 设置是否使用 HTTPS 协议来访问 UP / UC 服务器
     #[inline]
     pub fn use_https(mut self, use_https: bool) -> Self {
         self.use_https = use_https;
         self
     }
 
+    /// 设置 UC 查询的频率
     #[inline]
     pub fn update_interval(mut self, update_interval: Duration) -> Self {
         self.update_interval = update_interval;
         self
     }
 
+    /// 设置域名访问失败后的惩罚时长
     #[inline]
     pub fn punish_duration(mut self, punish_duration: Duration) -> Self {
         self.punish_duration = punish_duration;
         self
     }
 
+    /// 设置域名访问的基础超时时长
     #[inline]
     pub fn base_timeout(mut self, base_timeout: Duration) -> Self {
         self.base_timeout = base_timeout;
         self
     }
 
+    /// 设置失败域名的最大重试次数
+    ///
+    /// 一旦一个域名的被惩罚次数超过限制，则域名选择器不会选择该域名，除非被惩罚的域名比例超过上限，或惩罚时长超过指定时长
     #[inline]
     pub fn max_punished_times(mut self, max_punished_times: usize) -> Self {
         self.max_punished_times = max_punished_times;
         self
     }
 
+    /// 设置被惩罚的域名最大比例
+    ///
+    /// 域名选择器在搜索域名时，一旦被跳过的域名比例大于该值，则下一个域名将被选中，不管该域名是否也被惩罚。一旦该域名成功，则惩罚将立刻被取消
     #[inline]
     pub fn max_punished_hosts_percent(mut self, max_punished_hosts_percent: u8) -> Self {
         self.max_punished_hosts_percent = max_punished_hosts_percent;
         self
     }
 
+    /// 构建对象上传器
     #[inline]
     pub fn build(self) -> Uploader {
         let up_querier = if self.uc_urls.is_empty() {
@@ -161,8 +178,8 @@ impl UploaderBuilder {
                 }))
                 .should_punish_callback(Box::new(|err| match err {
                     HTTPCallError::ReqwestError(err) if err.is_builder() => false,
-                    HTTPCallError::StatusCodeError { status_code, .. } => {
-                        !status_code.is_client_error()
+                    HTTPCallError::StatusCodeError(err) => {
+                        !is_client_error_status(err.status_code())
                     }
                     _ => true,
                 }))
@@ -192,6 +209,7 @@ impl UploaderBuilder {
 }
 
 impl Uploader {
+    /// 上传文件
     #[inline]
     pub fn upload_file<'a>(&'a self, file: File) -> UploadRequestBuilder<'a> {
         UploadRequestBuilder {
@@ -200,7 +218,7 @@ impl Uploader {
             part_size: 1 << 22,
             object_name: None,
             upload_progress_callback: None,
-            fname: None,
+            file_name: None,
             mime_type: None,
             metadata: None,
             custom_vars: None,
@@ -208,12 +226,13 @@ impl Uploader {
     }
 }
 
+/// 上传文件请求构建器
 pub struct UploadRequestBuilder<'a> {
     uploader: &'a Uploader,
     source: UploadSource,
     part_size: u64,
     object_name: Option<String>,
-    fname: Option<String>,
+    file_name: Option<String>,
     mime_type: Option<String>,
     metadata: Option<HashMap<String, String>>,
     custom_vars: Option<HashMap<String, String>>,
@@ -221,30 +240,35 @@ pub struct UploadRequestBuilder<'a> {
 }
 
 impl<'a> UploadRequestBuilder<'a> {
+    /// 设置分片大小
     #[inline]
     pub fn part_size(mut self, part_size: u64) -> Self {
         self.part_size = part_size;
         self
     }
 
+    /// 设置对象名称
     #[inline]
     pub fn object_name(mut self, object_name: impl Into<String>) -> Self {
         self.object_name = Some(object_name.into());
         self
     }
 
+    /// 设置原始文件名
     #[inline]
-    pub fn fname(mut self, fname: impl Into<String>) -> Self {
-        self.fname = Some(fname.into());
+    pub fn file_name(mut self, file_name: impl Into<String>) -> Self {
+        self.file_name = Some(file_name.into());
         self
     }
 
+    /// 设置文件 MIME 类型
     #[inline]
     pub fn mime_type(mut self, mime_type: impl Into<String>) -> Self {
         self.mime_type = Some(mime_type.into());
         self
     }
 
+    /// 追加自定义元数据
     pub fn add_metadata(
         mut self,
         metadata_key: impl Into<String>,
@@ -260,12 +284,14 @@ impl<'a> UploadRequestBuilder<'a> {
         self
     }
 
+    /// 设置自定义元数据
     #[inline]
     pub fn metadata(mut self, metadata: HashMap<String, String>) -> Self {
         self.metadata = Some(metadata);
         self
     }
 
+    /// 追加自定义变量
     pub fn add_custom_var(
         mut self,
         custom_var_name: impl Into<String>,
@@ -281,12 +307,14 @@ impl<'a> UploadRequestBuilder<'a> {
         self
     }
 
+    /// 设置自定义变量
     #[inline]
     pub fn custom_vars(mut self, custom_vars: HashMap<String, String>) -> Self {
         self.custom_vars = Some(custom_vars);
         self
     }
 
+    /// 设置上传进度回调函数（仅在分片上传时生效）
     #[inline]
     pub fn upload_progress_callback(
         mut self,
@@ -296,6 +324,7 @@ impl<'a> UploadRequestBuilder<'a> {
         self
     }
 
+    /// 开始上传
     #[inline]
     pub fn start(self) -> HTTPCallResult<UploadResult> {
         if self.source.len()? <= self.part_size {
@@ -312,7 +341,7 @@ impl<'a> UploadRequestBuilder<'a> {
                 .api_caller
                 .form_upload(&FormUploadRequest::new(
                     self.object_name.as_deref(),
-                    self.fname.as_deref(),
+                    self.file_name.as_deref(),
                     self.mime_type.as_deref(),
                     self.source,
                     self.metadata,
@@ -371,7 +400,7 @@ impl<'a> UploadRequestBuilder<'a> {
                     self.object_name.as_deref(),
                     init_parts_response.response_body().upload_id(),
                     completed_parts,
-                    self.fname,
+                    self.file_name,
                     self.mime_type,
                     self.metadata,
                     self.custom_vars,
@@ -382,18 +411,21 @@ impl<'a> UploadRequestBuilder<'a> {
     }
 }
 
+/// 上传结果
 #[derive(Debug, Clone)]
 pub struct UploadResult {
     response_body: JSONValue,
 }
 
 impl UploadResult {
+    /// 获取上传结果响应
     #[inline]
     pub fn response_body(&self) -> &JSONValue {
         &self.response_body
     }
 }
 
+/// 上传进度信息
 #[derive(Debug, Clone)]
 pub struct UploadProgressInfo<'a> {
     upload_id: &'a str,
@@ -402,19 +434,46 @@ pub struct UploadProgressInfo<'a> {
 }
 
 impl<'a> UploadProgressInfo<'a> {
+    /// 获取 Upload ID
     #[inline]
     pub fn upload_id(&self) -> &str {
         self.upload_id
     }
 
+    /// 获取已经上传的数据量
     #[inline]
     pub fn uploaded(&self) -> u64 {
         self.uploaded
     }
 
+    /// 获取上传成功的分片号码
     #[inline]
     pub fn part_number(&self) -> u32 {
         self.part_number
+    }
+}
+
+#[inline]
+fn is_client_error_status(code: StatusCode) -> bool {
+    return code.is_client_error() && code != to_status_code(406)
+        || [
+            to_status_code(501),
+            to_status_code(573),
+            to_status_code(608),
+            to_status_code(612),
+            to_status_code(614),
+            to_status_code(616),
+            to_status_code(619),
+            to_status_code(630),
+            to_status_code(631),
+            to_status_code(640),
+            to_status_code(701),
+        ]
+        .contains(&code);
+
+    #[inline]
+    fn to_status_code(code: u16) -> StatusCode {
+        StatusCode::from_u16(code).expect("Invalid status code")
     }
 }
 

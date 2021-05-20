@@ -13,6 +13,7 @@ use std::{
 };
 use tap::prelude::*;
 
+/// 七牛配置信息
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub struct Config {
     #[serde(alias = "ak")]
