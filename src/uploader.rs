@@ -4,8 +4,8 @@ use crate::{
     host_selector::HostSelector,
     query::HostsQuerier,
     upload_apis::{
-        CompletePartInfo, CompletePartsRequest, InitPartsRequest, UploadAPICaller,
-        UploadPartRequest,
+        CompletePartInfo, CompletePartsRequest, FormUploadRequest, InitPartsRequest,
+        UploadAPICaller, UploadPartRequest,
     },
     upload_token::BucketUploadTokenProvider,
     utils::UploadSource,
@@ -296,7 +296,34 @@ impl<'a> UploadRequestBuilder<'a> {
         self
     }
 
+    #[inline]
     pub fn start(self) -> HTTPCallResult<UploadResult> {
+        if self.source.len()? <= self.part_size {
+            self.start_form_upload()
+        } else {
+            self.start_resumable_upload()
+        }
+    }
+
+    fn start_form_upload(self) -> HTTPCallResult<UploadResult> {
+        let mut form_upload_result =
+            self.uploader
+                .inner
+                .api_caller
+                .form_upload(&FormUploadRequest::new(
+                    self.object_name.as_deref(),
+                    self.fname.as_deref(),
+                    self.mime_type.as_deref(),
+                    self.source,
+                    self.metadata,
+                    self.custom_vars,
+                ))?;
+        Ok(UploadResult {
+            response_body: take(form_upload_result.response_body_mut()),
+        })
+    }
+
+    fn start_resumable_upload(self) -> HTTPCallResult<UploadResult> {
         let init_parts_response =
             self.uploader
                 .inner

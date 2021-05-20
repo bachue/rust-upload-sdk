@@ -1,7 +1,7 @@
 use crc32fast::Hasher as Crc32;
 use digest::{generic_array::GenericArray, Digest};
 use md5::Md5;
-use positioned_io::{Cursor, ReadAt};
+use positioned_io::{Cursor, ReadAt, Size};
 use reqwest::blocking::Body;
 use std::{
     fs::File,
@@ -84,6 +84,14 @@ impl UploadSource {
     pub(super) fn reader(&self) -> impl Read + Send + 'static {
         Cursor::new(self.to_owned())
     }
+
+    #[inline]
+    pub(super) fn len(&self) -> IOResult<u64> {
+        match self {
+            Self::File(file) => Ok(file.metadata()?.len()),
+            Self::Data(data) => Ok(data.len() as u64),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -119,5 +127,12 @@ impl ReadAt for UploadSource {
             Self::File(file) => file.read_at(pos, buf),
             Self::Data(data) => data.read_at(pos, buf),
         }
+    }
+}
+
+impl Size for UploadSource {
+    #[inline]
+    fn size(&self) -> IOResult<Option<u64>> {
+        self.len().map(Some)
     }
 }
