@@ -1,3 +1,4 @@
+use crc32fast::Hasher as Crc32;
 use digest::{generic_array::GenericArray, Digest};
 use md5::Md5;
 use positioned_io::{Cursor, ReadAt};
@@ -57,6 +58,31 @@ impl UploadSource {
             offset_size: 0,
             part_size,
         }
+    }
+
+    #[inline]
+    pub(super) fn crc32(&self) -> IOResult<(u64, u32)> {
+        let mut hasher = Crc32::new();
+        let mut have_read: u64 = 0;
+        let mut reader = Cursor::new(self);
+        let mut buf = [0u8; 1 << 10];
+        loop {
+            match reader.read(&mut buf)? {
+                0 => {
+                    break;
+                }
+                chunk_size => {
+                    hasher.update(&buf[..chunk_size]);
+                    have_read = have_read.saturating_add(chunk_size as u64);
+                }
+            }
+        }
+        Ok((have_read, hasher.finalize()))
+    }
+
+    #[inline]
+    pub(super) fn reader(&self) -> impl Read + Send + 'static {
+        Cursor::new(self.to_owned())
     }
 }
 

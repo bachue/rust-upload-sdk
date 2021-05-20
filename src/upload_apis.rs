@@ -4,11 +4,14 @@ use crate::{
     error::{json_decode_response, HTTPCallError, HTTPCallResult},
     host_selector::{HostInfo, HostSelector},
     upload_token::UploadTokenProvider,
-    utils::PartReader,
+    utils::{PartReader, UploadSource},
 };
 use log::{debug, error, info, warn};
 use reqwest::{
-    blocking::RequestBuilder as HTTPRequestBuilder,
+    blocking::{
+        multipart::{Form, Part},
+        RequestBuilder as HTTPRequestBuilder,
+    },
     header::{HeaderName, HeaderValue, AUTHORIZATION},
     Method, StatusCode,
 };
@@ -36,6 +39,54 @@ impl UploadAPICaller {
             upload_token_provider,
             tries,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct FormUploadRequest<'a> {
+    object_name: Option<&'a str>,
+    file_name: Option<&'a str>,
+    mime_type: Option<&'a str>,
+    upload_source: UploadSource,
+    metadata: Option<HashMap<String, String>>,
+    custom_vars: Option<HashMap<String, String>>,
+}
+
+impl<'a> FormUploadRequest<'a> {
+    #[inline]
+    pub(super) fn new(
+        object_name: Option<&'a str>,
+        file_name: Option<&'a str>,
+        mime_type: Option<&'a str>,
+        upload_source: UploadSource,
+        metadata: Option<HashMap<String, String>>,
+        custom_vars: Option<HashMap<String, String>>,
+    ) -> Self {
+        Self {
+            object_name,
+            file_name,
+            mime_type,
+            upload_source,
+            metadata,
+            custom_vars,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct FormUploadResponse {
+    response_body: JSONValue,
+}
+
+impl FormUploadResponse {
+    #[inline]
+    pub(super) fn response_body_mut(&mut self) -> &mut JSONValue {
+        &mut self.response_body
+    }
+
+    #[inline]
+    pub(super) fn response_body(&self) -> &JSONValue {
+        &self.response_body
     }
 }
 
@@ -257,6 +308,82 @@ impl CompletePartsResponse {
 const CONTENT_MD5: &str = "content-md5";
 
 impl UploadAPICaller {
+    pub(super) fn form_upload(
+        &self,
+        request: &FormUploadRequest,
+    ) -> HTTPCallResult<FormUploadResponse> {
+        self.with_retries(
+            &Method::POST,
+            "",
+            |tries, request_builder, url, chosen_info| {
+                debug!("[{}] form_upload url: {}", tries, url);
+                let form_data = {
+                    let mut form_data = Form::new().text(
+                        "token",
+                        self.upload_token_provider.to_string()?.into_owned(),
+                    );
+                    if let Some(object_name) = request.object_name {
+                        form_data = form_data.text("key", object_name.to_owned());
+                    }
+
+                    let (file_size, crc32) = request.upload_source.crc32()?;
+                    form_data = form_data.text("crc32", crc32.to_string());
+                    let mut file_part =
+                        Part::reader_with_length(request.upload_source.reader(), file_size);
+                    if let Some(file_name) = request.file_name {
+                        file_part = file_part.file_name(file_name.to_owned());
+                    }
+                    if let Some(mime_str) = request.mime_type {
+                        file_part = file_part.mime_str(mime_str)?;
+                    }
+                    form_data = form_data.part("file", file_part);
+                    if let Some(metadata) = &request.metadata {
+                        for (meta_key, meta_value) in metadata.iter() {
+                            form_data = form_data
+                                .text(format!("x-qn-meta-{}", meta_key), meta_value.to_owned());
+                        }
+                    }
+                    if let Some(custom_vars) = &request.custom_vars {
+                        for (var_name, var_value) in custom_vars.iter() {
+                            form_data =
+                                form_data.text(format!("x:{}", var_name), var_value.to_owned());
+                        }
+                    }
+                    form_data
+                };
+                let response_body = request_builder
+                    .multipart(form_data)
+                    .send()
+                    .map_err(HTTPCallError::ReqwestError)
+                    .tap_err(|err| self.increase_timeout_power_if_needed(chosen_info, err))
+                    .and_then(|resp| {
+                        if resp.status() == StatusCode::OK {
+                            json_decode_response(resp)
+                        } else {
+                            Err(resp.into())
+                        }
+                    })
+                    .tap_ok(|(_, request_id): &(JSONValue, Option<HeaderValue>)| {
+                        info!(
+                            "[{}] form_upload ok url: {}, request_id: {:?}",
+                            tries, url, request_id,
+                        );
+                    })
+                    .map(|(resp, _)| resp)
+                    .tap_err(|err| {
+                        warn!("[{}] form_upload error url: {}, error: {}", tries, url, err);
+                    })?;
+                Ok(FormUploadResponse { response_body })
+            },
+            |err, url| {
+                error!("final failed form_upload url = {}, error: {:?}", url, err,);
+            },
+            &UploadAPICallerOption {
+                add_upload_authorization: false,
+            },
+        )
+    }
+
     pub(super) fn init_parts(
         &self,
         request: &InitPartsRequest,
@@ -298,6 +425,7 @@ impl UploadAPICaller {
             |err, url| {
                 error!("final failed init_parts url = {}, error: {:?}", url, err,);
             },
+            &Default::default(),
         )
     }
 
@@ -350,6 +478,7 @@ impl UploadAPICaller {
             |err, url| {
                 error!("final failed upload_part url = {}, error: {:?}", url, err,);
             },
+            &Default::default(),
         )
     }
 
@@ -404,6 +533,7 @@ impl UploadAPICaller {
                     url, err,
                 );
             },
+            &Default::default(),
         )
     }
 
@@ -413,6 +543,7 @@ impl UploadAPICaller {
         path: &str,
         mut for_each_url: impl FnMut(usize, HTTPRequestBuilder, &str, &HostInfo) -> HTTPCallResult<T>,
         final_error: impl FnOnce(&HTTPCallError, &str),
+        option: &UploadAPICallerOption,
     ) -> HTTPCallResult<T> {
         assert!(self.tries > 0);
 
@@ -421,15 +552,17 @@ impl UploadAPICaller {
             let last_try = self.tries - tries <= 1;
             let chosen_up_info = self.up_selector.select_host();
             let url = format!("{}/{}", chosen_up_info.host, path);
-            let request_builder = HTTP_CLIENT
+            let mut request_builder = HTTP_CLIENT
                 .read()
                 .unwrap()
                 .request(method.to_owned(), url.to_owned())
-                .header(
+                .timeout(chosen_up_info.timeout);
+            if option.add_upload_authorization {
+                request_builder = request_builder.header(
                     AUTHORIZATION,
                     &format!("UpToken {}", self.upload_token_provider.to_string()?),
-                )
-                .timeout(chosen_up_info.timeout);
+                );
+            }
             match for_each_url(tries, request_builder, &url, &chosen_up_info) {
                 Ok(result) => {
                     self.up_selector.reward(&chosen_up_info.host);
@@ -465,6 +598,20 @@ impl UploadAPICaller {
     }
 }
 
+#[derive(Clone, Debug)]
+struct UploadAPICallerOption {
+    add_upload_authorization: bool,
+}
+
+impl Default for UploadAPICallerOption {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            add_upload_authorization: true,
+        }
+    }
+}
+
 fn encode_object_name(object_name: Option<&str>) -> Cow<'static, str> {
     if let Some(object_name) = object_name {
         urlsafe_encode(object_name.as_bytes()).into()
@@ -481,12 +628,14 @@ mod tests {
     };
 
     use super::*;
+    use crc32fast::Hasher as Crc32;
     use digest::Digest;
-    use futures::channel::oneshot::channel;
+    use futures::{channel::oneshot::channel, TryStreamExt};
     use md5::Md5;
     use serde_json::json;
     use std::{
         boxed::Box,
+        io::Read,
         sync::{
             atomic::{AtomicUsize, Ordering::Relaxed},
             Arc,
@@ -494,12 +643,13 @@ mod tests {
     };
     use tokio::task::{spawn, spawn_blocking};
     use warp::{
-        filters::body::json as json_as_body,
+        filters::{body::json as json_as_body, multipart::form as form_as_body},
         header,
         http::{HeaderValue, StatusCode},
+        multipart::{FormData, Part},
         path,
-        reply::Response,
-        Filter,
+        reply::{json as reply_json, Response},
+        Buf, Filter, Rejection,
     };
 
     macro_rules! starts_with_server {
@@ -514,6 +664,97 @@ mod tests {
             tx.send(()).ok();
             handler.await.ok();
         }};
+    }
+
+    #[tokio::test]
+    async fn test_form_upload() -> anyhow::Result<()> {
+        env_logger::try_init().ok();
+
+        const FILE_CONTENT: &[u8] = b"01234567890";
+
+        let routes = warp::path::end()
+            .and(form_as_body())
+            .and_then(|form_data: FormData| async {
+                let mut form_data: HashMap<String, Part> = form_data
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|part| (part.name().to_owned(), part))
+                    .collect::<HashMap<String, Part>>();
+                assert_eq!(form_data.len(), 4);
+                let mut key_buf = String::new();
+                form_data
+                    .get_mut("key")
+                    .unwrap()
+                    .data()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .reader()
+                    .read_to_string(&mut key_buf)
+                    .unwrap();
+                assert_eq!("testfile".to_owned(), key_buf);
+                let mut crc32_buf = String::new();
+                form_data
+                    .get_mut("crc32")
+                    .unwrap()
+                    .data()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .reader()
+                    .read_to_string(&mut crc32_buf)
+                    .unwrap();
+                let crc32 = {
+                    let mut hasher = Crc32::new();
+                    hasher.update(FILE_CONTENT);
+                    hasher.finalize()
+                };
+                assert_eq!(crc32.to_string(), crc32_buf);
+                let file = form_data.get_mut("file").unwrap();
+                assert_eq!(file.filename(), Some("testfilename"));
+                assert_eq!(file.content_type(), Some("text/plain"));
+                let mut file_data_buf = Vec::new();
+                file.data()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .reader()
+                    .read_to_end(&mut file_data_buf)
+                    .unwrap();
+                assert_eq!(FILE_CONTENT.to_vec(), file_data_buf);
+                assert!(form_data.get("token").is_some());
+                Ok::<_, Rejection>(reply_json(&json!({ "key": "testfile" })))
+            });
+        starts_with_server!(addr, routes, {
+            let caller = UploadAPICaller {
+                up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
+                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
+                    "test-bucket",
+                    Duration::from_secs(60),
+                    Box::new(get_credential()),
+                )),
+                tries: 1,
+            };
+            spawn_blocking::<_, HTTPCallResult<_>>(move || {
+                let response = caller.form_upload(&FormUploadRequest::new(
+                    Some("testfile"),
+                    Some("testfilename"),
+                    Some("text/plain"),
+                    UploadSource::Data(Arc::new(FILE_CONTENT.to_vec())),
+                    None,
+                    None,
+                ))?;
+                assert_eq!(
+                    response.response_body.get("key").and_then(|s| s.as_str()),
+                    Some("testfile"),
+                );
+                Ok(())
+            })
+            .await??;
+        });
+        Ok(())
     }
 
     #[tokio::test]
