@@ -23,6 +23,12 @@ jobs:
           command: clippy
           args: -- -D warnings
       - uses: actions-rs/cargo@v1
+        env:
+          QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+          QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+          QINIU_BUCKET_NAME: ${{ secrets.QINIU_BUCKET_NAME }}
+          QINIU_BUCKET_DOMAIN: ${{ secrets.QINIU_BUCKET_DOMAIN }}
+          QINIU_UC_URL: ${{ secrets.QINIU_UC_URL }}
         with:
           command: test
           args: -- --test-threads=1
