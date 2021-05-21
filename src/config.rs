@@ -266,7 +266,7 @@ impl ConfigBuilder {
         self
     }
 
-    /// 配置域名访问的基础超时时长，默认为 30000 毫秒
+    /// 配置域名访问的基础超时时长，默认为 30 秒
     #[inline]
     pub fn base_timeout_ms(mut self, base_timeout_duration: Duration) -> Self {
         self.inner.base_timeout_ms = Some(

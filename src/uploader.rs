@@ -4,12 +4,12 @@ use crate::{
     error::{HttpCallError, HttpCallResult},
     host_selector::HostSelector,
     query::HostsQuerier,
+    reader::UploadSource,
     upload_apis::{
         CompletePartInfo, CompletePartsRequest, CompletePartsRequestBody, FormUploadRequest,
         InitPartsRequest, UploadApiCaller, UploadPartRequest,
     },
     upload_token::BucketUploadTokenProvider,
-    utils::UploadSource,
 };
 use log::info;
 use once_cell::sync::Lazy;

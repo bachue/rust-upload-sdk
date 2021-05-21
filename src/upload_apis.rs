@@ -3,8 +3,8 @@ use crate::{
     config::HTTP_CLIENT,
     error::{json_decode_response, HttpCallError, HttpCallResult},
     host_selector::{HostInfo, HostSelector},
+    reader::{PartReader, UploadSource},
     upload_token::UploadTokenProvider,
-    utils::{PartReader, UploadSource},
 };
 use log::{debug, error, info, warn};
 use reqwest::{
@@ -633,7 +633,7 @@ fn encode_object_name(object_name: Option<&str>) -> Cow<'static, str> {
 mod tests {
     use crate::{
         credential::StaticCredentialProvider, host_selector::HostSelectorBuilder,
-        upload_token::BucketUploadTokenProvider, utils::UploadSource,
+        reader::UploadSource, upload_token::BucketUploadTokenProvider,
     };
 
     use super::*;

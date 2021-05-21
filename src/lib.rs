@@ -13,11 +13,11 @@ mod credential;
 mod error;
 mod host_selector;
 mod query;
+mod reader;
 mod upload_apis;
 mod upload_policy;
 mod upload_token;
 mod uploader;
-mod utils;
 
 pub use config::{Config, ConfigBuilder};
 pub use error::{HttpCallError, HttpCallResult, JsonDecodeError, StatusCodeError};
