@@ -1,3 +1,4 @@
+use crate::UploaderBuilder;
 use log::{error, info, warn};
 use notify::{watcher, DebouncedEvent, RecursiveMode, Result as NotifyResult, Watcher};
 use once_cell::sync::{Lazy, OnceCell};
@@ -288,6 +289,40 @@ impl ConfigBuilder {
         );
         self
     }
+}
+
+#[inline]
+pub(super) fn build_uploader_builder_from_env() -> Option<UploaderBuilder> {
+    QINIU_CONFIG
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(build_uploader_builder_from_config)
+}
+
+fn build_uploader_builder_from_config(config: &Config) -> UploaderBuilder {
+    let mut builder = UploaderBuilder::new(&config.access_key, &config.secret_key, &config.bucket);
+    if let Some(up_urls) = config.up_urls.as_ref() {
+        builder = builder.up_urls(up_urls.to_owned());
+    }
+    if let Some(uc_urls) = config.uc_urls.as_ref() {
+        builder = builder.uc_urls(uc_urls.to_owned());
+    }
+    if let Some(retry) = config.retry.as_ref() {
+        builder = builder
+            .up_tries(retry.to_owned())
+            .uc_tries(retry.to_owned());
+    }
+    if let Some(punish_time_s) = config.punish_time_s.as_ref() {
+        builder = builder.punish_duration(Duration::from_secs(punish_time_s.to_owned()));
+    }
+    if let Some(base_timeout_ms) = config.base_timeout_ms.as_ref() {
+        builder = builder.punish_duration(Duration::from_millis(base_timeout_ms.to_owned()));
+    }
+    if let Some(part_size) = config.part_size.as_ref() {
+        builder = builder.part_size(part_size.to_owned());
+    }
+    builder
 }
 
 #[cfg(test)]

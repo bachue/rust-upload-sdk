@@ -1,4 +1,5 @@
 use crate::{
+    config::build_uploader_builder_from_env,
     credential::{CredentialProvider, StaticCredentialProvider},
     error::{HttpCallError, HttpCallResult},
     host_selector::HostSelector,
@@ -10,9 +11,18 @@ use crate::{
     upload_token::BucketUploadTokenProvider,
     utils::UploadSource,
 };
+use log::info;
+use once_cell::sync::Lazy;
 use reqwest::StatusCode;
 use serde_json::Value as JSONValue;
-use std::{collections::HashMap, fs::File, mem::take, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs::File,
+    mem::take,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
+use tap::Tap;
 
 /// 对象上传器
 #[derive(Debug, Clone)]
@@ -24,6 +34,7 @@ pub struct Uploader {
 struct UploaderInner {
     api_caller: UploadApiCaller,
     bucket_name: String,
+    part_size: u64,
 }
 
 /// 对象上传构建器
@@ -36,6 +47,7 @@ pub struct UploaderBuilder {
     uc_urls: Vec<String>,
     up_tries: usize,
     uc_tries: usize,
+    part_size: u64,
     use_https: bool,
     update_interval: Duration,
     punish_duration: Duration,
@@ -64,6 +76,7 @@ impl UploaderBuilder {
             uc_urls: Default::default(),
             up_tries: 10,
             uc_tries: 10,
+            part_size: 1 << 22,
             use_https: false,
             update_interval: Duration::from_secs(60),
             punish_duration: Duration::from_secs(30 * 60),
@@ -126,6 +139,13 @@ impl UploaderBuilder {
     #[inline]
     pub fn base_timeout(mut self, base_timeout: Duration) -> Self {
         self.base_timeout = base_timeout;
+        self
+    }
+
+    /// 配置默认上传分片大小，单位为字节
+    #[inline]
+    pub fn part_size(mut self, part_size: u64) -> Self {
+        self.part_size = part_size;
         self
     }
 
@@ -203,19 +223,42 @@ impl UploaderBuilder {
                     self.up_tries,
                 ),
                 bucket_name: self.bucket,
+                part_size: self.part_size,
             }),
         }
+    }
+
+    /// 从环境变量创建对象上传构建器
+    #[inline]
+    pub fn from_env() -> Option<Self> {
+        build_uploader_builder_from_env()
     }
 }
 
 impl Uploader {
+    #[inline]
+    /// 从环境变量创建对象上传器
+    pub fn from_env() -> Option<Self> {
+        static UPLOADER: Lazy<RwLock<Option<Uploader>>> = Lazy::new(|| {
+            RwLock::new(build_uploader().tap(|_| {
+                *UPLOADER.write().unwrap() = build_uploader();
+                info!("UPLOADER reloaded: {:?}", UPLOADER);
+            }))
+        });
+        return UPLOADER.read().unwrap().as_ref().map(|u| u.to_owned());
+
+        #[inline]
+        fn build_uploader() -> Option<Uploader> {
+            UploaderBuilder::from_env().map(|b| b.build())
+        }
+    }
+
     /// 上传文件
     #[inline]
     pub fn upload_file(&self, file: File) -> UploadRequestBuilder {
         UploadRequestBuilder {
             uploader: self,
             source: UploadSource::File(Arc::new(file)),
-            part_size: 1 << 22,
             object_name: None,
             upload_progress_callback: None,
             file_name: None,
@@ -230,7 +273,6 @@ impl Uploader {
 pub struct UploadRequestBuilder<'a> {
     uploader: &'a Uploader,
     source: UploadSource,
-    part_size: u64,
     object_name: Option<String>,
     file_name: Option<String>,
     mime_type: Option<String>,
@@ -240,13 +282,6 @@ pub struct UploadRequestBuilder<'a> {
 }
 
 impl<'a> UploadRequestBuilder<'a> {
-    /// 设置分片大小
-    #[inline]
-    pub fn part_size(mut self, part_size: u64) -> Self {
-        self.part_size = part_size;
-        self
-    }
-
     /// 设置对象名称
     #[inline]
     pub fn object_name(mut self, object_name: impl Into<String>) -> Self {
@@ -327,7 +362,7 @@ impl<'a> UploadRequestBuilder<'a> {
     /// 开始上传
     #[inline]
     pub fn start(self) -> HttpCallResult<UploadResult> {
-        if self.source.len()? <= self.part_size {
+        if self.source.len()? <= self.uploader.inner.part_size {
             self.start_form_upload()
         } else {
             self.start_resumable_upload()
@@ -361,7 +396,7 @@ impl<'a> UploadRequestBuilder<'a> {
                     self.uploader.inner.bucket_name.as_ref(),
                     self.object_name.as_deref(),
                 ))?;
-        let mut partitioner = self.source.part(self.part_size);
+        let mut partitioner = self.source.part(self.uploader.inner.part_size);
         let mut part_number = 1u32;
         let mut uploaded = 0u64;
         let mut completed_parts = Vec::new();
