@@ -57,16 +57,19 @@ impl JsonDecodeError {
         }
     }
 
+    /// 获取核心错误信息
     #[inline]
     pub fn error(&self) -> &JSONError {
         &self.error
     }
 
+    /// 获取错误状态码
     #[inline]
     pub fn status_code(&self) -> StatusCode {
         self.status_code
     }
 
+    /// 获取请求 ID
     #[inline]
     pub fn request_id(&self) -> Option<&HeaderValue> {
         self.request_id.as_ref()
@@ -117,16 +120,19 @@ impl StatusCodeError {
         }
     }
 
+    /// 获取错误状态码
     #[inline]
     pub fn status_code(&self) -> StatusCode {
         self.status_code
     }
 
+    /// 获取错误信息
     #[inline]
     pub fn error_message(&self) -> Option<&str> {
         self.error_message.as_deref()
     }
 
+    /// 获取请求 ID
     #[inline]
     pub fn request_id(&self) -> Option<&HeaderValue> {
         self.request_id.as_ref()

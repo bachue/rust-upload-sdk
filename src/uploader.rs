@@ -1,5 +1,5 @@
 use crate::{
-    config::build_uploader_builder_from_env,
+    config::{build_uploader_builder_from_env, on_config_updated},
     credential::{CredentialProvider, StaticCredentialProvider},
     error::{HttpCallError, HttpCallResult},
     host_selector::HostSelector,
@@ -18,7 +18,9 @@ use serde_json::Value as JSONValue;
 use std::{
     collections::HashMap,
     fs::File,
+    io::Result as IOResult,
     mem::take,
+    path::Path,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -80,7 +82,7 @@ impl UploaderBuilder {
             use_https: false,
             update_interval: Duration::from_secs(60),
             punish_duration: Duration::from_secs(30 * 60),
-            base_timeout: Duration::from_millis(10000),
+            base_timeout: Duration::from_secs(30),
             max_punished_times: 5,
             max_punished_hosts_percent: 50,
         }
@@ -240,10 +242,12 @@ impl Uploader {
     /// 从环境变量创建对象上传器
     pub fn from_env() -> Option<Self> {
         static UPLOADER: Lazy<RwLock<Option<Uploader>>> = Lazy::new(|| {
-            RwLock::new(build_uploader().tap(|_| {
-                *UPLOADER.write().unwrap() = build_uploader();
-                info!("UPLOADER reloaded: {:?}", UPLOADER);
-            }))
+            RwLock::new(build_uploader()).tap(|_| {
+                on_config_updated(|| {
+                    *UPLOADER.write().unwrap() = build_uploader();
+                    info!("UPLOADER reloaded: {:?}", UPLOADER);
+                })
+            })
         });
         return UPLOADER.read().unwrap().as_ref().map(|u| u.to_owned());
 
@@ -253,7 +257,7 @@ impl Uploader {
         }
     }
 
-    /// 上传文件
+    /// 创建上传文件请求构建器
     #[inline]
     pub fn upload_file(&self, file: File) -> UploadRequestBuilder {
         UploadRequestBuilder {
@@ -266,6 +270,13 @@ impl Uploader {
             metadata: None,
             custom_vars: None,
         }
+    }
+
+    /// 创建上传文件请求构建器
+    #[inline]
+    pub fn upload_path(&self, path: impl AsRef<Path>) -> IOResult<UploadRequestBuilder> {
+        let file = File::open(path.as_ref())?;
+        Ok(self.upload_file(file))
     }
 }
 

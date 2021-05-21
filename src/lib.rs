@@ -20,5 +20,5 @@ mod uploader;
 mod utils;
 
 pub use config::{Config, ConfigBuilder};
-pub use error::{HttpCallError, HttpCallResult};
+pub use error::{HttpCallError, HttpCallResult, JsonDecodeError, StatusCodeError};
 pub use uploader::{UploadProgressInfo, UploadRequestBuilder, Uploader, UploaderBuilder};

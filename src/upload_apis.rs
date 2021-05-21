@@ -568,10 +568,9 @@ impl UploadApiCaller {
                 .request(method.to_owned(), url.to_owned())
                 .timeout(chosen_up_info.timeout);
             if option.add_upload_authorization {
-                request_builder = request_builder.header(
-                    AUTHORIZATION,
-                    &format!("UpToken {}", self.upload_token_provider.to_string()?),
-                );
+                let upload_token = self.upload_token_provider.to_string()?;
+                request_builder =
+                    request_builder.header(AUTHORIZATION, &format!("UpToken {}", upload_token));
             }
             match for_each_url(tries, request_builder, &url, &chosen_up_info) {
                 Ok(result) => {

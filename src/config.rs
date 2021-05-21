@@ -317,10 +317,10 @@ fn build_uploader_builder_from_config(config: &Config) -> UploaderBuilder {
         builder = builder.punish_duration(Duration::from_secs(punish_time_s.to_owned()));
     }
     if let Some(base_timeout_ms) = config.base_timeout_ms.as_ref() {
-        builder = builder.punish_duration(Duration::from_millis(base_timeout_ms.to_owned()));
+        builder = builder.base_timeout(Duration::from_millis(base_timeout_ms.to_owned()));
     }
     if let Some(part_size) = config.part_size.as_ref() {
-        builder = builder.part_size(part_size.to_owned());
+        builder = builder.part_size(part_size.to_owned() * (1 << 20));
     }
     builder
 }
