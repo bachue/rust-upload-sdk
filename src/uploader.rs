@@ -4,7 +4,7 @@ use crate::{
     error::{HttpCallError, HttpCallResult},
     host_selector::HostSelector,
     query::HostsQuerier,
-    reader::UploadSource,
+    reader::{FormUploadSource, UploadSource},
     upload_apis::{
         CompletePartInfo, CompletePartsRequest, CompletePartsRequestBody, FormUploadRequest,
         InitPartsRequest, UploadApiCaller, UploadPartRequest,
@@ -13,12 +13,13 @@ use crate::{
 };
 use log::info;
 use once_cell::sync::Lazy;
+use positioned_io::{Cursor, Size};
 use reqwest::StatusCode;
 use serde_json::Value as JSONValue;
 use std::{
     collections::HashMap,
     fs::File,
-    io::Result as IOResult,
+    io::{Read, Result as IOResult},
     mem::take,
     path::Path,
     sync::{Arc, RwLock},
@@ -259,16 +260,18 @@ impl Uploader {
 
     /// 创建上传文件请求构建器
     #[inline]
-    pub fn upload_file(&self, file: File) -> UploadRequestBuilder {
+    pub fn upload_file(&self, source: File) -> UploadRequestBuilder {
         UploadRequestBuilder {
-            uploader: self,
-            source: UploadSource::File(Arc::new(file)),
-            object_name: None,
-            upload_progress_callback: None,
-            file_name: None,
-            mime_type: None,
-            metadata: None,
-            custom_vars: None,
+            source,
+            inner: UploadRequestBuilderInner {
+                uploader: self,
+                object_name: None,
+                upload_progress_callback: None,
+                file_name: None,
+                mime_type: None,
+                metadata: None,
+                custom_vars: None,
+            },
         }
     }
 
@@ -280,10 +283,8 @@ impl Uploader {
     }
 }
 
-/// 上传文件请求构建器
-pub struct UploadRequestBuilder<'a> {
+struct UploadRequestBuilderInner<'a> {
     uploader: &'a Uploader,
-    source: UploadSource,
     object_name: Option<String>,
     file_name: Option<String>,
     mime_type: Option<String>,
@@ -292,25 +293,31 @@ pub struct UploadRequestBuilder<'a> {
     upload_progress_callback: Option<Box<dyn Fn(&UploadProgressInfo) -> HttpCallResult<()>>>,
 }
 
+/// 上传文件请求构建器
+pub struct UploadRequestBuilder<'a> {
+    source: File,
+    inner: UploadRequestBuilderInner<'a>,
+}
+
 impl<'a> UploadRequestBuilder<'a> {
     /// 设置对象名称
     #[inline]
     pub fn object_name(mut self, object_name: impl Into<String>) -> Self {
-        self.object_name = Some(object_name.into());
+        self.inner.object_name = Some(object_name.into());
         self
     }
 
     /// 设置原始文件名
     #[inline]
     pub fn file_name(mut self, file_name: impl Into<String>) -> Self {
-        self.file_name = Some(file_name.into());
+        self.inner.file_name = Some(file_name.into());
         self
     }
 
     /// 设置文件 MIME 类型
     #[inline]
     pub fn mime_type(mut self, mime_type: impl Into<String>) -> Self {
-        self.mime_type = Some(mime_type.into());
+        self.inner.mime_type = Some(mime_type.into());
         self
     }
 
@@ -320,12 +327,12 @@ impl<'a> UploadRequestBuilder<'a> {
         metadata_key: impl Into<String>,
         metadata_value: impl Into<String>,
     ) -> Self {
-        if let Some(metadata) = &mut self.metadata {
+        if let Some(metadata) = &mut self.inner.metadata {
             metadata.insert(metadata_key.into(), metadata_value.into());
         } else {
             let mut metadata = HashMap::new();
             metadata.insert(metadata_key.into(), metadata_value.into());
-            self.metadata = Some(metadata);
+            self.inner.metadata = Some(metadata);
         }
         self
     }
@@ -333,7 +340,7 @@ impl<'a> UploadRequestBuilder<'a> {
     /// 设置自定义元数据
     #[inline]
     pub fn metadata(mut self, metadata: HashMap<String, String>) -> Self {
-        self.metadata = Some(metadata);
+        self.inner.metadata = Some(metadata);
         self
     }
 
@@ -343,12 +350,12 @@ impl<'a> UploadRequestBuilder<'a> {
         custom_var_name: impl Into<String>,
         custom_var_value: impl Into<String>,
     ) -> Self {
-        if let Some(custom_vars) = &mut self.custom_vars {
+        if let Some(custom_vars) = &mut self.inner.custom_vars {
             custom_vars.insert(custom_var_name.into(), custom_var_value.into());
         } else {
             let mut custom_vars = HashMap::new();
             custom_vars.insert(custom_var_name.into(), custom_var_value.into());
-            self.custom_vars = Some(custom_vars);
+            self.inner.custom_vars = Some(custom_vars);
         }
         self
     }
@@ -356,7 +363,7 @@ impl<'a> UploadRequestBuilder<'a> {
     /// 设置自定义变量
     #[inline]
     pub fn custom_vars(mut self, custom_vars: HashMap<String, String>) -> Self {
-        self.custom_vars = Some(custom_vars);
+        self.inner.custom_vars = Some(custom_vars);
         self
     }
 
@@ -366,21 +373,45 @@ impl<'a> UploadRequestBuilder<'a> {
         mut self,
         upload_progress_callback: Box<dyn Fn(&UploadProgressInfo) -> HttpCallResult<()>>,
     ) -> Self {
-        self.upload_progress_callback = Some(upload_progress_callback);
+        self.inner.upload_progress_callback = Some(upload_progress_callback);
         self
     }
 
     /// 开始上传
-    #[inline]
     pub fn start(self) -> HttpCallResult<UploadResult> {
-        if self.source.len()? <= self.uploader.inner.part_size {
-            self.start_form_upload()
+        if let Some(total_size) = self.source.size()? {
+            if total_size <= self.inner.uploader.inner.part_size {
+                self.inner.start_form_upload(Arc::new(self.source).into())
+            } else {
+                self.inner
+                    .start_resumable_upload(Arc::new(RwLock::new(self.source)).into())
+            }
         } else {
-            self.start_resumable_upload()
+            self.start_upload_reader()
         }
     }
 
-    fn start_form_upload(self) -> HttpCallResult<UploadResult> {
+    fn start_upload_reader(mut self) -> HttpCallResult<UploadResult> {
+        let first_chunk = {
+            let mut chunk_buf = Vec::new();
+            let source = &mut self.source;
+            source
+                .take(self.inner.uploader.inner.part_size + 1)
+                .read_to_end(&mut chunk_buf)?;
+            chunk_buf
+        };
+        if first_chunk.len() as u64 <= self.inner.uploader.inner.part_size {
+            self.inner.start_form_upload(Arc::new(first_chunk).into())
+        } else {
+            self.inner.start_resumable_upload(UploadSource::from_reader(
+                Cursor::new(first_chunk).chain(self.source),
+            ))
+        }
+    }
+}
+
+impl<'a> UploadRequestBuilderInner<'a> {
+    fn start_form_upload(self, source: FormUploadSource) -> HttpCallResult<UploadResult> {
         let mut form_upload_result =
             self.uploader
                 .inner
@@ -389,7 +420,7 @@ impl<'a> UploadRequestBuilder<'a> {
                     self.object_name.as_deref(),
                     self.file_name.as_deref(),
                     self.mime_type.as_deref(),
-                    self.source,
+                    source,
                     self.metadata,
                     self.custom_vars,
                 ))?;
@@ -398,7 +429,7 @@ impl<'a> UploadRequestBuilder<'a> {
         })
     }
 
-    fn start_resumable_upload(self) -> HttpCallResult<UploadResult> {
+    fn start_resumable_upload(self, upload_source: UploadSource) -> HttpCallResult<UploadResult> {
         let init_parts_response =
             self.uploader
                 .inner
@@ -407,7 +438,7 @@ impl<'a> UploadRequestBuilder<'a> {
                     self.uploader.inner.bucket_name.as_ref(),
                     self.object_name.as_deref(),
                 ))?;
-        let mut partitioner = self.source.part(self.uploader.inner.part_size);
+        let mut partitioner = upload_source.part(self.uploader.inner.part_size)?;
         let mut part_number = 1u32;
         let mut uploaded = 0u64;
         let mut completed_parts = Vec::new();

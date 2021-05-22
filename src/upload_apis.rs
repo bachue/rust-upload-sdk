@@ -3,7 +3,7 @@ use crate::{
     config::HTTP_CLIENT,
     error::{json_decode_response, HttpCallError, HttpCallResult},
     host_selector::{HostInfo, HostSelector},
-    reader::{PartReader, UploadSource},
+    reader::{FormUploadSource, PartReader},
     upload_token::UploadTokenProvider,
 };
 use log::{debug, error, info, warn};
@@ -47,7 +47,7 @@ pub(super) struct FormUploadRequest<'a> {
     object_name: Option<&'a str>,
     file_name: Option<&'a str>,
     mime_type: Option<&'a str>,
-    upload_source: UploadSource,
+    upload_source: FormUploadSource,
     metadata: Option<HashMap<String, String>>,
     custom_vars: Option<HashMap<String, String>>,
 }
@@ -58,7 +58,7 @@ impl<'a> FormUploadRequest<'a> {
         object_name: Option<&'a str>,
         file_name: Option<&'a str>,
         mime_type: Option<&'a str>,
-        upload_source: UploadSource,
+        upload_source: FormUploadSource,
         metadata: Option<HashMap<String, String>>,
         custom_vars: Option<HashMap<String, String>>,
     ) -> Self {
@@ -631,12 +631,11 @@ fn encode_object_name(object_name: Option<&str>) -> Cow<'static, str> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         credential::StaticCredentialProvider, host_selector::HostSelectorBuilder,
-        reader::UploadSource, upload_token::BucketUploadTokenProvider,
+        upload_token::BucketUploadTokenProvider,
     };
-
-    use super::*;
     use crc32fast::Hasher as Crc32;
     use digest::Digest;
     use futures::{channel::oneshot::channel, TryStreamExt};
@@ -751,7 +750,7 @@ mod tests {
                     Some("testfile"),
                     Some("testfilename"),
                     Some("text/plain"),
-                    UploadSource::Data(Arc::new(FILE_CONTENT.to_vec())),
+                    Arc::new(FILE_CONTENT.to_vec()).into(),
                     None,
                     None,
                 ))?;
@@ -958,8 +957,8 @@ mod tests {
                     object_name: Some("test-key"),
                     upload_id: "fakeuploadid",
                     part_number: 1,
-                    part_reader: PartReader::new(
-                        UploadSource::Data(Arc::new(PART_CONTENT.to_vec())),
+                    part_reader: PartReader::partible_data(
+                        Arc::new(PART_CONTENT.to_vec()),
                         0,
                         1 << 20,
                     ),
