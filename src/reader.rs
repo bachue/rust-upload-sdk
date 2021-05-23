@@ -275,6 +275,16 @@ impl UploadSource {
 
     #[inline]
     pub(super) fn part(self, part_size: u64) -> IOResult<UploadSourcePartitioner> {
+        #[derive(Debug)]
+        struct ArcLockedFileWrapper(Arc<RwLock<File>>);
+
+        impl<'a> Read for ArcLockedFileWrapper {
+            #[inline]
+            fn read(&mut self, buf: &mut [u8]) -> IOResult<usize> {
+                self.0.write().unwrap().read(buf)
+            }
+        }
+
         match self.inner {
             UploadSourceInner::File(file) if file.read().unwrap().size()?.is_some() => {
                 Ok(UploadSourcePartitioner {
@@ -293,24 +303,16 @@ impl UploadSource {
                 part_size,
             }),
             UploadSourceInner::File(source) => Ok(UploadSourcePartitioner {
-                inner: UploadSourcePartitionerInner::ImpartibleFile { source },
+                inner: UploadSourcePartitionerInner::Impartible {
+                    source: Box::new(ArcLockedFileWrapper(source)),
+                },
                 part_size,
             }),
             UploadSourceInner::Reader(source) => Ok(UploadSourcePartitioner {
-                inner: UploadSourcePartitionerInner::ImpartibleReader { source },
+                inner: UploadSourcePartitionerInner::Impartible { source },
                 part_size,
             }),
         }
-    }
-}
-
-#[derive(Debug)]
-struct RefArcLockedFileWrapper<'a>(&'a Arc<RwLock<File>>);
-
-impl<'a> Read for RefArcLockedFileWrapper<'a> {
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> IOResult<usize> {
-        self.0.write().unwrap().read(buf)
     }
 }
 
@@ -326,10 +328,7 @@ enum UploadSourcePartitionerInner {
         source: PartibleReader,
         offset: u64,
     },
-    ImpartibleFile {
-        source: Arc<RwLock<File>>,
-    },
-    ImpartibleReader {
+    Impartible {
         source: Box<dyn ThreadSafeReadDebug>,
     },
 }
@@ -351,18 +350,7 @@ impl UploadSourcePartitioner {
                     Ok(None)
                 }
             }
-            UploadSourcePartitionerInner::ImpartibleFile { source } => {
-                let mut part_buf = Vec::new();
-                RefArcLockedFileWrapper(source)
-                    .take(self.part_size)
-                    .read_to_end(&mut part_buf)?;
-                if part_buf.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(PartReader::data(Arc::new(part_buf))))
-                }
-            }
-            UploadSourcePartitionerInner::ImpartibleReader { source } => {
+            UploadSourcePartitionerInner::Impartible { source } => {
                 let mut part_buf = Vec::new();
                 source.take(self.part_size).read_to_end(&mut part_buf)?;
                 if part_buf.is_empty() {
