@@ -16,7 +16,7 @@ impl<T: Read + Sync + Send + Debug> ThreadSafeReadDebug for T {}
 #[derive(Debug, Clone)]
 enum PartibleReader {
     File(Arc<RwLock<File>>),
-    Data(DataReadAtWrapper),
+    Data(Arc<Vec<u8>>),
 }
 
 impl PartibleReader {
@@ -24,7 +24,7 @@ impl PartibleReader {
     fn len(&self) -> IOResult<u64> {
         match self {
             Self::File(file) => Ok(file.read().unwrap().metadata()?.len()),
-            Self::Data(data) => Ok(data.0.len() as u64),
+            Self::Data(data) => Ok(data.len() as u64),
         }
     }
 }
@@ -46,20 +46,10 @@ impl From<Arc<RwLock<File>>> for PartibleReader {
     }
 }
 
-impl From<DataReadAtWrapper> for PartibleReader {
+impl From<Arc<Vec<u8>>> for PartibleReader {
     #[inline]
-    fn from(data: DataReadAtWrapper) -> Self {
+    fn from(data: Arc<Vec<u8>>) -> Self {
         Self::Data(data)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct DataReadAtWrapper(Arc<Vec<u8>>);
-
-impl ReadAt for DataReadAtWrapper {
-    #[inline]
-    fn read_at(&self, pos: u64, buf: &mut [u8]) -> IOResult<usize> {
-        self.0.read_at(pos, buf)
     }
 }
 
@@ -86,11 +76,7 @@ impl PartReader {
 
     #[inline]
     pub(super) fn partible_data(data: Arc<Vec<u8>>, start_from: u64, len: u64) -> Self {
-        Self::read_at_based(
-            PartibleReader::Data(DataReadAtWrapper(data)),
-            start_from,
-            len,
-        )
+        Self::read_at_based(PartibleReader::Data(data), start_from, len)
     }
 
     #[inline]
@@ -125,23 +111,33 @@ impl PartReader {
 
     #[inline]
     fn reader(&self) -> Box<dyn Read + Send + 'static> {
-        match &self.inner {
+        return match &self.inner {
             PartReaderInner::Data(data) => {
-                Box::new(Cursor::new(DataReadAtWrapper(data.to_owned())))
+                Box::new(Cursor::new(DataReadAtAdapter(data.to_owned())))
             }
             PartReaderInner::ReadAt {
                 source,
                 start_from,
                 len,
             } => Box::new(Cursor::new_pos(source.to_owned(), *start_from).take(*len)),
+        };
+
+        #[derive(Debug, Clone)]
+        struct DataReadAtAdapter(Arc<Vec<u8>>);
+
+        impl ReadAt for DataReadAtAdapter {
+            #[inline]
+            fn read_at(&self, pos: u64, buf: &mut [u8]) -> IOResult<usize> {
+                self.0.read_at(pos, buf)
+            }
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct FileReadAtWrapper(Arc<File>);
+struct FileReadAtAdapter(Arc<File>);
 
-impl ReadAt for FileReadAtWrapper {
+impl ReadAt for FileReadAtAdapter {
     #[inline]
     fn read_at(&self, pos: u64, buf: &mut [u8]) -> IOResult<usize> {
         self.0.read_at(pos, buf)
@@ -149,9 +145,9 @@ impl ReadAt for FileReadAtWrapper {
 }
 
 #[derive(Debug, Clone)]
-struct BytesAsRefWrapper(Arc<Vec<u8>>);
+struct BytesAsRefAdapter(Arc<Vec<u8>>);
 
-impl AsRef<[u8]> for BytesAsRefWrapper {
+impl AsRef<[u8]> for BytesAsRefAdapter {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         &self.0
@@ -193,10 +189,10 @@ impl FormUploadSource {
     pub(super) fn reader(&self) -> impl Read + Send + 'static {
         match &self.inner {
             FormUploadSourceInner::File(file) => {
-                FormUploadSourceReader::File(Cursor::new(FileReadAtWrapper(file.to_owned())))
+                FormUploadSourceReader::File(Cursor::new(FileReadAtAdapter(file.to_owned())))
             }
             FormUploadSourceInner::Data(data) => {
-                FormUploadSourceReader::Data(IOCursor::new(BytesAsRefWrapper(data.to_owned())))
+                FormUploadSourceReader::Data(IOCursor::new(BytesAsRefAdapter(data.to_owned())))
             }
         }
     }
@@ -204,8 +200,8 @@ impl FormUploadSource {
 
 #[derive(Debug)]
 enum FormUploadSourceReader {
-    File(Cursor<FileReadAtWrapper>),
-    Data(IOCursor<BytesAsRefWrapper>),
+    File(Cursor<FileReadAtAdapter>),
+    Data(IOCursor<BytesAsRefAdapter>),
 }
 
 impl Read for FormUploadSourceReader {
@@ -275,17 +271,7 @@ impl UploadSource {
 
     #[inline]
     pub(super) fn part(self, part_size: u64) -> IOResult<UploadSourcePartitioner> {
-        #[derive(Debug)]
-        struct ArcLockedFileWrapper(Arc<RwLock<File>>);
-
-        impl<'a> Read for ArcLockedFileWrapper {
-            #[inline]
-            fn read(&mut self, buf: &mut [u8]) -> IOResult<usize> {
-                self.0.write().unwrap().read(buf)
-            }
-        }
-
-        match self.inner {
+        return match self.inner {
             UploadSourceInner::File(file) if file.read().unwrap().size()?.is_some() => {
                 Ok(UploadSourcePartitioner {
                     inner: UploadSourcePartitionerInner::Partible {
@@ -297,14 +283,14 @@ impl UploadSource {
             }
             UploadSourceInner::Data(data) => Ok(UploadSourcePartitioner {
                 inner: UploadSourcePartitionerInner::Partible {
-                    source: DataReadAtWrapper(data).into(),
+                    source: data.into(),
                     offset: 0,
                 },
                 part_size,
             }),
             UploadSourceInner::File(source) => Ok(UploadSourcePartitioner {
                 inner: UploadSourcePartitionerInner::Impartible {
-                    source: Box::new(ArcLockedFileWrapper(source)),
+                    source: Box::new(ArcLockedFileAdapter(source)),
                 },
                 part_size,
             }),
@@ -312,6 +298,16 @@ impl UploadSource {
                 inner: UploadSourcePartitionerInner::Impartible { source },
                 part_size,
             }),
+        };
+
+        #[derive(Debug)]
+        struct ArcLockedFileAdapter(Arc<RwLock<File>>);
+
+        impl<'a> Read for ArcLockedFileAdapter {
+            #[inline]
+            fn read(&mut self, buf: &mut [u8]) -> IOResult<usize> {
+                self.0.write().unwrap().read(buf)
+            }
         }
     }
 }
