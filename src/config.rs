@@ -405,6 +405,7 @@ mod tests {
             base_timeout_ms: Default::default(),
             dial_timeout_ms: Default::default(),
             part_size: Default::default(),
+            base_timeout_multiple_percents: Default::default(),
         };
         let tempfile_path = {
             let mut tempfile = TempFileBuilder::new().suffix(".toml").tempfile()?;
