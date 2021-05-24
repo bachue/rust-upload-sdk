@@ -21,4 +21,6 @@ mod uploader;
 
 pub use config::{Config, ConfigBuilder};
 pub use error::{HttpCallError, HttpCallResult, JsonDecodeError, StatusCodeError};
-pub use uploader::{UploadProgressInfo, UploadRequestBuilder, Uploader, UploaderBuilder};
+pub use uploader::{
+    UploadProgressCallback, UploadProgressInfo, UploadRequestBuilder, Uploader, UploaderBuilder,
+};

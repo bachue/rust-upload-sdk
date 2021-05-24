@@ -1,6 +1,6 @@
 use std::{env::args, path::Path};
 
-use qiniu_upload::Uploader;
+use qiniu_upload::{UploadProgressInfo, Uploader};
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
             .upload_path(&file_path)?
             .object_name(&file_path)
             .file_name(file_name.to_string_lossy())
-            .upload_progress_callback(Box::new(|progress| {
+            .upload_progress_callback(Box::new(|progress: &UploadProgressInfo| {
                 println!(
                     "Upload progress: upload id: {}, part number: {}, uploaded: {}",
                     progress.upload_id(),

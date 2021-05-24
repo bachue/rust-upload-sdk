@@ -11,7 +11,7 @@ use crate::{
     },
     upload_token::BucketUploadTokenProvider,
 };
-use log::info;
+use log::{error, info};
 use once_cell::sync::Lazy;
 use positioned_io::{Cursor, Size};
 use reqwest::StatusCode;
@@ -23,9 +23,9 @@ use std::{
     mem::take,
     path::Path,
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
-use tap::Tap;
+use tap::{Tap, TapFallible};
 
 /// 对象上传器
 #[derive(Debug, Clone)]
@@ -39,6 +39,10 @@ struct UploaderInner {
     bucket_name: String,
     part_size: u64,
 }
+
+/// 上传进度回调函数
+pub type UploadProgressCallback =
+    Box<dyn Fn(&UploadProgressInfo) -> HttpCallResult<()> + Send + Sync + 'static>;
 
 /// 对象上传构建器
 #[derive(Debug)]
@@ -290,7 +294,7 @@ struct UploadRequestBuilderInner<'a> {
     mime_type: Option<String>,
     metadata: Option<HashMap<String, String>>,
     custom_vars: Option<HashMap<String, String>>,
-    upload_progress_callback: Option<Box<dyn Fn(&UploadProgressInfo) -> HttpCallResult<()>>>,
+    upload_progress_callback: Option<UploadProgressCallback>,
 }
 
 /// 上传文件请求构建器
@@ -371,7 +375,7 @@ impl<'a> UploadRequestBuilder<'a> {
     #[inline]
     pub fn upload_progress_callback(
         mut self,
-        upload_progress_callback: Box<dyn Fn(&UploadProgressInfo) -> HttpCallResult<()>>,
+        upload_progress_callback: UploadProgressCallback,
     ) -> Self {
         self.inner.upload_progress_callback = Some(upload_progress_callback);
         self
@@ -379,6 +383,27 @@ impl<'a> UploadRequestBuilder<'a> {
 
     /// 开始上传
     pub fn start(self) -> HttpCallResult<UploadResult> {
+        let begin_at = Instant::now();
+        let object_name = self.inner.object_name.to_owned();
+        self.start_uploading()
+            .tap_ok(|_| {
+                info!(
+                    "done uploading, object_name {:?}, elapsed {:?}",
+                    object_name,
+                    begin_at.elapsed()
+                );
+            })
+            .tap_err(|err| {
+                error!(
+                    "error uploading, object_name {:?}, err: {:?}, elapsed {:?}",
+                    object_name,
+                    err,
+                    begin_at.elapsed()
+                );
+            })
+    }
+
+    fn start_uploading(self) -> HttpCallResult<UploadResult> {
         if let Some(total_size) = self.source.size()? {
             if total_size <= self.inner.uploader.inner.part_size {
                 self.inner.start_form_upload(Arc::new(self.source).into())
@@ -387,11 +412,11 @@ impl<'a> UploadRequestBuilder<'a> {
                     .start_resumable_upload(Arc::new(RwLock::new(self.source)).into())
             }
         } else {
-            self.start_upload_reader()
+            self.start_uploading_reader()
         }
     }
 
-    fn start_upload_reader(mut self) -> HttpCallResult<UploadResult> {
+    fn start_uploading_reader(mut self) -> HttpCallResult<UploadResult> {
         let first_chunk = {
             let mut chunk_buf = Vec::new();
             let source = &mut self.source;
