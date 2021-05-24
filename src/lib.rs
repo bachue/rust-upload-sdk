@@ -19,7 +19,7 @@ mod upload_policy;
 mod upload_token;
 mod uploader;
 
-pub use config::{Config, ConfigBuilder};
+pub use config::{Config, ConfigBuilder, ServiceName};
 pub use error::{HttpCallError, HttpCallResult, JsonDecodeError, StatusCodeError};
 pub use uploader::{
     UploadProgressCallback, UploadProgressInfo, UploadRequestBuilder, Uploader, UploaderBuilder,

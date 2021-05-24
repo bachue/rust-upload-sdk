@@ -5,8 +5,9 @@ use once_cell::sync::{Lazy, OnceCell};
 use reqwest::blocking::Client as HTTPClient;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     convert::TryInto,
-    env, fs,
+    env, fmt, fs,
     path::{Path, PathBuf},
     sync::{mpsc::channel, RwLock},
     thread::{Builder as ThreadBuilder, JoinHandle},
@@ -36,6 +37,7 @@ pub struct Config {
     retry: Option<usize>,
     punish_time_s: Option<u64>,
     base_timeout_ms: Option<u64>,
+    base_timeout_multiple_percents: Option<HashMap<String, u32>>,
     dial_timeout_ms: Option<u64>,
 }
 
@@ -220,6 +222,7 @@ impl ConfigBuilder {
                 retry: None,
                 punish_time_s: None,
                 base_timeout_ms: None,
+                base_timeout_multiple_percents: None,
                 dial_timeout_ms: None,
             },
         }
@@ -278,6 +281,23 @@ impl ConfigBuilder {
         self
     }
 
+    /// 配置域名访问的基础超时时长倍数百分比，service_name 指的是服务名称，percent 指的是倍数百分比，最终服务的基础超时时长为 base_timeout_ms * 该服务对应的 percent / 100
+    #[inline]
+    pub fn add_base_timeout_multiple_percent(
+        mut self,
+        service_name: ServiceName,
+        percent: u32,
+    ) -> Self {
+        if let Some(percents) = &mut self.inner.base_timeout_multiple_percents {
+            percents.insert(service_name.to_string(), percent);
+        } else {
+            let mut percents = HashMap::new();
+            percents.insert(service_name.to_string(), percent);
+            self.inner.base_timeout_multiple_percents = Some(percents);
+        }
+        self
+    }
+
     /// 配置域名连接的超时时长，默认为 500 毫秒
     #[inline]
     pub fn dial_timeout_ms(mut self, dial_timeout_duration: Duration) -> Self {
@@ -313,6 +333,19 @@ fn build_uploader_builder_from_config(config: &Config) -> UploaderBuilder {
             .up_tries(retry.to_owned())
             .uc_tries(retry.to_owned());
     }
+    if let Some(base_timeout_multiple_percents) = config.base_timeout_multiple_percents.as_ref() {
+        if let Some(&uc_timeout_multiple_percents) =
+            base_timeout_multiple_percents.get(&ServiceName::Uc.to_string())
+        {
+            builder = builder.uc_timeout_multiple(uc_timeout_multiple_percents);
+        }
+        if let Some(&up_timeout_multiple_percents) =
+            base_timeout_multiple_percents.get(&ServiceName::Up.to_string())
+        {
+            builder = builder.up_timeout_multiple(up_timeout_multiple_percents);
+        }
+    }
+
     if let Some(punish_time_s) = config.punish_time_s.as_ref() {
         builder = builder.punish_duration(Duration::from_secs(punish_time_s.to_owned()));
     }
@@ -323,6 +356,26 @@ fn build_uploader_builder_from_config(config: &Config) -> UploaderBuilder {
         builder = builder.part_size(part_size.to_owned() * (1 << 20));
     }
     builder
+}
+
+/// 服务名称
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ServiceName {
+    /// UP 服务器
+    Up,
+    /// UC 服务器
+    Uc,
+}
+
+impl fmt::Display for ServiceName {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uc => "uc".fmt(f),
+            Self::Up => "up".fmt(f),
+        }
+    }
 }
 
 #[cfg(test)]

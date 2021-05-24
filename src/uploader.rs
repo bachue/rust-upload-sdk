@@ -53,7 +53,9 @@ pub struct UploaderBuilder {
     up_urls: Vec<String>,
     uc_urls: Vec<String>,
     up_tries: usize,
+    up_timeout_multiple_percent: u32,
     uc_tries: usize,
+    uc_timeout_multiple_percent: u32,
     part_size: u64,
     use_https: bool,
     update_interval: Duration,
@@ -82,7 +84,9 @@ impl UploaderBuilder {
             up_urls: Default::default(),
             uc_urls: Default::default(),
             up_tries: 10,
+            up_timeout_multiple_percent: 1000,
             uc_tries: 10,
+            uc_timeout_multiple_percent: 100,
             part_size: 1 << 22,
             use_https: false,
             update_interval: Duration::from_secs(60),
@@ -114,10 +118,24 @@ impl UploaderBuilder {
         self
     }
 
+    /// 设置上传超时时长倍数百分比
+    #[inline]
+    pub fn up_timeout_multiple(mut self, up_timeout_multiple: u32) -> Self {
+        self.up_timeout_multiple_percent = up_timeout_multiple;
+        self
+    }
+
     /// 设置 UC 查询的最大尝试次数
     #[inline]
     pub fn uc_tries(mut self, uc_tries: usize) -> Self {
         self.uc_tries = uc_tries;
+        self
+    }
+
+    /// 设置 UC 查询超时时长倍数百分比
+    #[inline]
+    pub fn uc_timeout_multiple(mut self, uc_timeout_multiple: u32) -> Self {
+        self.uc_timeout_multiple_percent = uc_timeout_multiple;
         self
     }
 
@@ -186,7 +204,7 @@ impl UploaderBuilder {
                     .punish_duration(self.punish_duration)
                     .max_punished_times(self.max_punished_times)
                     .max_punished_hosts_percent(self.max_punished_hosts_percent)
-                    .base_timeout(self.base_timeout)
+                    .base_timeout(self.base_timeout * self.uc_timeout_multiple_percent / 100)
                     .build(),
                 self.uc_tries,
             ))
@@ -214,7 +232,7 @@ impl UploaderBuilder {
                 .punish_duration(self.punish_duration)
                 .max_punished_times(self.max_punished_times)
                 .max_punished_hosts_percent(self.max_punished_hosts_percent)
-                .base_timeout(self.base_timeout)
+                .base_timeout(self.base_timeout * self.up_timeout_multiple_percent / 100)
                 .build()
         };
 
