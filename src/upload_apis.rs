@@ -23,27 +23,19 @@ use tap::prelude::*;
 #[derive(Debug)]
 pub(super) struct UploadApiCaller {
     up_selector: HostSelector,
-    upload_token_provider: Box<dyn UploadTokenProvider>,
     tries: usize,
 }
 
 impl UploadApiCaller {
     #[inline]
-    pub(super) fn new(
-        up_selector: HostSelector,
-        upload_token_provider: Box<dyn UploadTokenProvider>,
-        tries: usize,
-    ) -> Self {
-        Self {
-            up_selector,
-            upload_token_provider,
-            tries,
-        }
+    pub(super) fn new(up_selector: HostSelector, tries: usize) -> Self {
+        Self { up_selector, tries }
     }
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct FormUploadRequest<'a> {
+    upload_token_provider: &'a dyn UploadTokenProvider,
     object_name: Option<&'a str>,
     file_name: Option<&'a str>,
     mime_type: Option<&'a str>,
@@ -55,6 +47,7 @@ pub(super) struct FormUploadRequest<'a> {
 impl<'a> FormUploadRequest<'a> {
     #[inline]
     pub(super) fn new(
+        upload_token_provider: &'a dyn UploadTokenProvider,
         object_name: Option<&'a str>,
         file_name: Option<&'a str>,
         mime_type: Option<&'a str>,
@@ -63,6 +56,7 @@ impl<'a> FormUploadRequest<'a> {
         custom_vars: Option<HashMap<String, String>>,
     ) -> Self {
         Self {
+            upload_token_provider,
             object_name,
             file_name,
             mime_type,
@@ -92,14 +86,20 @@ impl FormUploadResponse {
 
 #[derive(Debug, Clone)]
 pub(super) struct InitPartsRequest<'a> {
+    upload_token_provider: &'a dyn UploadTokenProvider,
     bucket_name: &'a str,
     object_name: Option<&'a str>,
 }
 
 impl<'a> InitPartsRequest<'a> {
     #[inline]
-    pub(super) fn new(bucket_name: &'a str, object_name: Option<&'a str>) -> Self {
+    pub(super) fn new(
+        upload_token_provider: &'a dyn UploadTokenProvider,
+        bucket_name: &'a str,
+        object_name: Option<&'a str>,
+    ) -> Self {
         Self {
+            upload_token_provider,
             bucket_name,
             object_name,
         }
@@ -143,6 +143,7 @@ impl InitPartsResponseBody {
 
 #[derive(Debug, Clone)]
 pub(super) struct UploadPartRequest<'a> {
+    upload_token_provider: &'a dyn UploadTokenProvider,
     bucket_name: &'a str,
     object_name: Option<&'a str>,
     upload_id: &'a str,
@@ -153,6 +154,7 @@ pub(super) struct UploadPartRequest<'a> {
 impl<'a> UploadPartRequest<'a> {
     #[inline]
     pub(super) fn new(
+        upload_token_provider: &'a dyn UploadTokenProvider,
         bucket_name: &'a str,
         object_name: Option<&'a str>,
         upload_id: &'a str,
@@ -160,6 +162,7 @@ impl<'a> UploadPartRequest<'a> {
         part_reader: PartReader,
     ) -> Self {
         Self {
+            upload_token_provider,
             bucket_name,
             object_name,
             upload_id,
@@ -275,6 +278,7 @@ impl CompletePartsRequestBody {
 
 #[derive(Debug, Clone)]
 pub(super) struct CompletePartsRequest<'a> {
+    upload_token_provider: &'a dyn UploadTokenProvider,
     bucket_name: &'a str,
     object_name: Option<&'a str>,
     upload_id: &'a str,
@@ -284,12 +288,14 @@ pub(super) struct CompletePartsRequest<'a> {
 impl<'a> CompletePartsRequest<'a> {
     #[inline]
     pub(super) fn new(
+        upload_token_provider: &'a dyn UploadTokenProvider,
         bucket_name: &'a str,
         object_name: Option<&'a str>,
         upload_id: &'a str,
         request_body: CompletePartsRequestBody,
     ) -> Self {
         Self {
+            upload_token_provider,
             bucket_name,
             object_name,
             upload_id,
@@ -325,12 +331,13 @@ impl UploadApiCaller {
         self.with_retries(
             &Method::POST,
             "",
+            None,
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] form_upload url: {}", tries, url);
                 let form_data = {
                     let mut form_data = Form::new().text(
                         "token",
-                        self.upload_token_provider.to_string()?.into_owned(),
+                        request.upload_token_provider.to_string()?.into_owned(),
                     );
                     if let Some(object_name) = request.object_name {
                         form_data = form_data.text("key", object_name.to_owned());
@@ -388,9 +395,6 @@ impl UploadApiCaller {
             |err, url| {
                 error!("final failed form_upload url = {}, error: {:?}", url, err,);
             },
-            &UploadApiCallerOption {
-                add_upload_authorization: false,
-            },
         )
     }
 
@@ -405,6 +409,7 @@ impl UploadApiCaller {
                 request.bucket_name,
                 encode_object_name(request.object_name)
             ),
+            Some(request.upload_token_provider),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] init_parts url: {}", tries, url);
                 let response_body = request_builder
@@ -435,7 +440,6 @@ impl UploadApiCaller {
             |err, url| {
                 error!("final failed init_parts url = {}, error: {:?}", url, err,);
             },
-            &Default::default(),
         )
     }
 
@@ -452,6 +456,7 @@ impl UploadApiCaller {
                 request.upload_id,
                 request.part_number,
             ),
+            Some(request.upload_token_provider),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] upload_part url: {}", tries, url);
                 let (part_size, md5) = request.part_reader.md5()?;
@@ -488,7 +493,6 @@ impl UploadApiCaller {
             |err, url| {
                 error!("final failed upload_part url = {}, error: {:?}", url, err,);
             },
-            &Default::default(),
         )
     }
 
@@ -504,6 +508,7 @@ impl UploadApiCaller {
                 encode_object_name(request.object_name),
                 request.upload_id,
             ),
+            Some(request.upload_token_provider),
             |tries, request_builder, url, chosen_info| {
                 debug!("[{}] complete_parts url: {}", tries, url);
                 let response_body = request_builder
@@ -543,7 +548,6 @@ impl UploadApiCaller {
                     url, err,
                 );
             },
-            &Default::default(),
         )
     }
 
@@ -551,9 +555,9 @@ impl UploadApiCaller {
         &self,
         method: &Method,
         path: &str,
+        upload_token_provider: Option<&dyn UploadTokenProvider>,
         mut for_each_url: impl FnMut(usize, HTTPRequestBuilder, &str, &HostInfo) -> HttpCallResult<T>,
         final_error: impl FnOnce(&HttpCallError, &str),
-        option: &UploadApiCallerOption,
     ) -> HttpCallResult<T> {
         assert!(self.tries > 0);
 
@@ -567,8 +571,8 @@ impl UploadApiCaller {
                 .unwrap()
                 .request(method.to_owned(), url.to_owned())
                 .timeout(chosen_up_info.timeout);
-            if option.add_upload_authorization {
-                let upload_token = self.upload_token_provider.to_string()?;
+            if let Some(upload_token_provider) = upload_token_provider {
+                let upload_token = upload_token_provider.to_string()?;
                 request_builder =
                     request_builder.header(AUTHORIZATION, &format!("UpToken {}", upload_token));
             }
@@ -607,20 +611,6 @@ impl UploadApiCaller {
     }
 }
 
-#[derive(Clone, Debug)]
-struct UploadApiCallerOption {
-    add_upload_authorization: bool,
-}
-
-impl Default for UploadApiCallerOption {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            add_upload_authorization: true,
-        }
-    }
-}
-
 fn encode_object_name(object_name: Option<&str>) -> Cow<'static, str> {
     if let Some(object_name) = object_name {
         urlsafe_encode(object_name.as_bytes()).into()
@@ -633,13 +623,15 @@ fn encode_object_name(object_name: Option<&str>) -> Cow<'static, str> {
 mod tests {
     use super::*;
     use crate::{
-        credential::StaticCredentialProvider, host_selector::HostSelectorBuilder,
-        upload_token::BucketUploadTokenProvider,
+        credential::StaticCredentialProvider,
+        host_selector::HostSelectorBuilder,
+        upload_token::{BucketUploadTokenProvider, ObjectUploadTokenProvider},
     };
     use crc32fast::Hasher as Crc32;
     use digest::Digest;
     use futures::{channel::oneshot::channel, TryStreamExt};
     use md5::Md5;
+    use reqwest::header::CONTENT_TYPE;
     use serde_json::json;
     use std::{
         boxed::Box,
@@ -656,7 +648,7 @@ mod tests {
         http::{HeaderValue, StatusCode},
         multipart::{FormData, Part},
         path,
-        reply::{json as reply_json, Response},
+        reply::{json as reply_json, with_status as reply_with_status, Response},
         Buf, Filter, Rejection,
     };
 
@@ -738,15 +730,17 @@ mod tests {
         starts_with_server!(addr, routes, {
             let caller = UploadApiCaller {
                 up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
-                    "test-bucket",
-                    Duration::from_secs(60),
-                    Box::new(get_credential()),
-                )),
                 tries: 1,
             };
             spawn_blocking::<_, HttpCallResult<_>>(move || {
+                let upload_token_provider = ObjectUploadTokenProvider::new(
+                    "test-bucket",
+                    "testfile",
+                    Duration::from_secs(60),
+                    Arc::new(get_credential()),
+                );
                 let response = caller.form_upload(&FormUploadRequest::new(
+                    &upload_token_provider,
                     Some("testfile"),
                     Some("testfilename"),
                     Some("text/plain"),
@@ -779,26 +773,26 @@ mod tests {
                         .to_str()
                         .unwrap()
                         .starts_with("UpToken 1234567890:"));
-                    Response::new(
-                        serde_json::to_vec(&json!({ "uploadId": "fakeuploadid" }))
-                            .unwrap()
-                            .into(),
-                    )
+                    reply_json(&json!({ "uploadId": "fakeuploadid" }))
                 },
             );
         starts_with_server!(addr, routes, {
             let caller = UploadApiCaller {
                 up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
-                    "test-bucket",
-                    Duration::from_secs(60),
-                    Box::new(get_credential()),
-                )),
                 tries: 1,
             };
             spawn_blocking::<_, HttpCallResult<_>>(move || {
-                let response =
-                    caller.init_parts(&InitPartsRequest::new("test-bucket", Some("test-key")))?;
+                let upload_token_provider = ObjectUploadTokenProvider::new(
+                    "test-bucket",
+                    "test-key",
+                    Duration::from_secs(60),
+                    Arc::new(get_credential()),
+                );
+                let response = caller.init_parts(&InitPartsRequest::new(
+                    &upload_token_provider,
+                    "test-bucket",
+                    Some("test-key"),
+                ))?;
                 assert_eq!(response.response_body.upload_id, "fakeuploadid");
                 Ok(())
             })
@@ -825,30 +819,32 @@ mod tests {
                             .unwrap()
                             .starts_with("UpToken 1234567890:"));
                         called_times.fetch_add(1, Relaxed);
-                        Response::new(
-                            serde_json::to_vec(&json!({ "error": "bad token" }))
-                                .unwrap()
-                                .into(),
+                        reply_with_status(
+                            reply_json(&json!({ "error": "bad token" })),
+                            StatusCode::UNAUTHORIZED,
                         )
-                        .tap_mut(|response| *response.status_mut() = StatusCode::UNAUTHORIZED)
                     },
                 )
         };
         starts_with_server!(addr, routes, {
             let caller = UploadApiCaller {
                 up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
-                    "test-bucket",
-                    Duration::from_secs(60),
-                    Box::new(get_credential()),
-                )),
                 tries: 3,
             };
             {
                 let called_times = called_times.to_owned();
                 spawn_blocking::<_, HttpCallResult<_>>(move || {
+                    let upload_token_provider = BucketUploadTokenProvider::new(
+                        "test-bucket",
+                        Duration::from_secs(60),
+                        Arc::new(get_credential()),
+                    );
                     let err = caller
-                        .init_parts(&InitPartsRequest::new("test-bucket", None))
+                        .init_parts(&InitPartsRequest::new(
+                            &upload_token_provider,
+                            "test-bucket",
+                            None,
+                        ))
                         .unwrap_err();
                     match err {
                         HttpCallError::StatusCodeError(err) => {
@@ -872,16 +868,20 @@ mod tests {
                         _ => true,
                     }))
                     .build(),
-                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
-                    "test-bucket",
-                    Duration::from_secs(60),
-                    Box::new(get_credential()),
-                )),
                 tries: 3,
             };
             spawn_blocking::<_, HttpCallResult<_>>(move || {
+                let upload_token_provider = BucketUploadTokenProvider::new(
+                    "test-bucket",
+                    Duration::from_secs(60),
+                    Arc::new(get_credential()),
+                );
                 let err = caller
-                    .init_parts(&InitPartsRequest::new("test-bucket", None))
+                    .init_parts(&InitPartsRequest::new(
+                        &upload_token_provider,
+                        "test-bucket",
+                        None,
+                    ))
                     .unwrap_err();
                 match err {
                     HttpCallError::StatusCodeError(err) => {
@@ -931,12 +931,8 @@ mod tests {
                             .unwrap()
                             .starts_with("UpToken 1234567890:"));
                         assert_eq!(content_md5.to_str().unwrap(), hex::encode(md5));
-                        Response::new(
-                            serde_json::to_vec(&json!({ "etag": "fakeetag_1", "md5": content_md5
-                        .to_str()
-                        .unwrap() }))
-                            .unwrap()
-                            .into(),
+                        reply_json(
+                            &json!({ "etag": "fakeetag_1", "md5": content_md5.to_str().unwrap() }),
                         )
                     },
                 )
@@ -944,15 +940,17 @@ mod tests {
         starts_with_server!(addr, routes, {
             let caller = UploadApiCaller {
                 up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
-                    "test-bucket",
-                    Duration::from_secs(60),
-                    Box::new(get_credential()),
-                )),
                 tries: 1,
             };
             spawn_blocking::<_, HttpCallResult<_>>(move || {
+                let upload_token_provider = ObjectUploadTokenProvider::new(
+                    "test-bucket",
+                    "test-key",
+                    Duration::from_secs(60),
+                    Arc::new(get_credential()),
+                );
                 let response = caller.upload_part(&UploadPartRequest {
+                    upload_token_provider: &upload_token_provider,
                     bucket_name: "test-bucket",
                     object_name: Some("test-key"),
                     upload_id: "fakeuploadid",
@@ -993,25 +991,23 @@ mod tests {
                         .unwrap()
                         .starts_with("UpToken 1234567890:"));
                     assert_eq!(body.parts.len(), 3);
-                    Response::new(
-                        serde_json::to_vec(&json!({ "hash": "fakeetag" }))
-                            .unwrap()
-                            .into(),
-                    )
+                    reply_json(&json!({ "hash": "fakeetag" }))
                 },
             );
         starts_with_server!(addr, routes, {
             let caller = UploadApiCaller {
                 up_selector: HostSelectorBuilder::new(vec![format!("http://{}", addr)]).build(),
-                upload_token_provider: Box::new(BucketUploadTokenProvider::new(
-                    "test-bucket",
-                    Duration::from_secs(60),
-                    Box::new(get_credential()),
-                )),
                 tries: 1,
             };
             spawn_blocking::<_, HttpCallResult<_>>(move || {
+                let upload_token_provider = ObjectUploadTokenProvider::new(
+                    "test-bucket",
+                    "~",
+                    Duration::from_secs(60),
+                    Arc::new(get_credential()),
+                );
                 let response = caller.complete_parts(&CompletePartsRequest {
+                    upload_token_provider: &upload_token_provider,
                     bucket_name: "test-bucket",
                     object_name: Some("~"),
                     upload_id: "fakeuploadid",

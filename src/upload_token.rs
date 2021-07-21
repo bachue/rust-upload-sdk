@@ -8,6 +8,7 @@ use std::{
     borrow::Cow,
     fmt,
     io::{Error as IOError, Result as IOResult},
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
@@ -169,10 +170,17 @@ impl UploadTokenProvider for FromUploadPolicy {
     }
 }
 
+pub(super) struct ObjectUploadTokenProvider {
+    bucket: Cow<'static, str>,
+    key: Cow<'static, str>,
+    upload_token_lifetime: Duration,
+    credential: Arc<dyn CredentialProvider>,
+}
+
 pub(super) struct BucketUploadTokenProvider {
     bucket: Cow<'static, str>,
     upload_token_lifetime: Duration,
-    credential: Box<dyn CredentialProvider>,
+    credential: Arc<dyn CredentialProvider>,
 }
 
 impl BucketUploadTokenProvider {
@@ -180,7 +188,7 @@ impl BucketUploadTokenProvider {
     pub(super) fn new(
         bucket: impl Into<Cow<'static, str>>,
         upload_token_lifetime: Duration,
-        credential: Box<dyn CredentialProvider>,
+        credential: Arc<dyn CredentialProvider>,
     ) -> Self {
         Self {
             bucket: bucket.into(),
@@ -208,7 +216,7 @@ impl UploadTokenProvider for BucketUploadTokenProvider {
 
     fn policy(&self) -> ParseResult<Cow<UploadPolicy>> {
         Ok(UploadPolicyBuilder::new_policy_for_bucket(
-            self.bucket.to_string(),
+            self.bucket.as_ref(),
             self.upload_token_lifetime,
         )
         .build()
@@ -218,7 +226,76 @@ impl UploadTokenProvider for BucketUploadTokenProvider {
     fn to_string(&self) -> IOResult<Cow<str>> {
         let upload_token = self.credential.get()?.sign_with_data(
             UploadPolicyBuilder::new_policy_for_bucket(
-                self.bucket.to_string(),
+                self.bucket.as_ref(),
+                self.upload_token_lifetime,
+            )
+            .build()
+            .as_json()
+            .as_bytes(),
+        );
+        Ok(upload_token.into())
+    }
+
+    #[inline]
+    fn as_upload_token_provider(&self) -> &dyn UploadTokenProvider {
+        self
+    }
+
+    #[inline]
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl ObjectUploadTokenProvider {
+    #[inline]
+    pub(super) fn new(
+        bucket: impl Into<Cow<'static, str>>,
+        key: impl Into<Cow<'static, str>>,
+        upload_token_lifetime: Duration,
+        credential: Arc<dyn CredentialProvider>,
+    ) -> Self {
+        Self {
+            bucket: bucket.into(),
+            key: key.into(),
+            upload_token_lifetime,
+            credential,
+        }
+    }
+}
+
+impl fmt::Debug for ObjectUploadTokenProvider {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ObjectUploadTokenProvider")
+            .field("bucket", &self.bucket)
+            .field("key", &self.key)
+            .field("upload_token_lifetime", &self.upload_token_lifetime)
+            .finish()
+    }
+}
+
+impl UploadTokenProvider for ObjectUploadTokenProvider {
+    #[inline]
+    fn access_key(&self) -> ParseResult<Cow<str>> {
+        Ok(self.credential.get()?.into_pair().0)
+    }
+
+    fn policy(&self) -> ParseResult<Cow<UploadPolicy>> {
+        Ok(UploadPolicyBuilder::new_policy_for_object(
+            self.bucket.as_ref(),
+            self.key.as_ref(),
+            self.upload_token_lifetime,
+        )
+        .build()
+        .into())
+    }
+
+    fn to_string(&self) -> IOResult<Cow<str>> {
+        let upload_token = self.credential.get()?.sign_with_data(
+            UploadPolicyBuilder::new_policy_for_object(
+                self.bucket.as_ref(),
+                self.key.as_ref(),
                 self.upload_token_lifetime,
             )
             .build()

@@ -9,7 +9,10 @@ use crate::{
         CompletePartInfo, CompletePartsRequest, CompletePartsRequestBody, FormUploadRequest,
         InitPartsRequest, UploadApiCaller, UploadPartRequest,
     },
-    upload_token::BucketUploadTokenProvider,
+    upload_policy::UploadPolicy,
+    upload_token::{
+        BucketUploadTokenProvider, ObjectUploadTokenProvider, ParseResult, UploadTokenProvider,
+    },
 };
 use log::{error, info};
 use once_cell::sync::Lazy;
@@ -17,6 +20,7 @@ use positioned_io::{Cursor, Size};
 use reqwest::StatusCode;
 use serde_json::Value as JSONValue;
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fs::File,
     io::{Read, Result as IOResult},
@@ -37,6 +41,8 @@ pub struct Uploader {
 struct UploaderInner {
     api_caller: UploadApiCaller,
     bucket_name: String,
+    base_timeout: Duration,
+    credential: Arc<dyn CredentialProvider>,
     part_size: u64,
 }
 
@@ -47,7 +53,7 @@ pub type UploadProgressCallback =
 /// 对象上传构建器
 #[derive(Debug)]
 pub struct UploaderBuilder {
-    credential: Box<dyn CredentialProvider>,
+    credential: Arc<dyn CredentialProvider>,
     access_key: String,
     bucket: String,
     up_urls: Vec<String>,
@@ -75,7 +81,7 @@ impl UploaderBuilder {
     ) -> Self {
         let access_key = access_key.into();
         Self {
-            credential: Box::new(StaticCredentialProvider::new(
+            credential: Arc::new(StaticCredentialProvider::new(
                 access_key.to_owned(),
                 secret_key.into(),
             )),
@@ -238,17 +244,11 @@ impl UploaderBuilder {
 
         Uploader {
             inner: Arc::new(UploaderInner {
-                api_caller: UploadApiCaller::new(
-                    up_selector,
-                    Box::new(BucketUploadTokenProvider::new(
-                        self.bucket.to_owned(),
-                        self.base_timeout,
-                        self.credential,
-                    )),
-                    self.up_tries,
-                ),
+                api_caller: UploadApiCaller::new(up_selector, self.up_tries),
                 bucket_name: self.bucket,
                 part_size: self.part_size,
+                base_timeout: self.base_timeout,
+                credential: self.credential,
             }),
         }
     }
@@ -455,11 +455,13 @@ impl<'a> UploadRequestBuilder<'a> {
 
 impl<'a> UploadRequestBuilderInner<'a> {
     fn start_form_upload(self, source: FormUploadSource) -> HttpCallResult<UploadResult> {
+        let upload_token_provider = self.make_upload_token_provider();
         let mut form_upload_result =
             self.uploader
                 .inner
                 .api_caller
                 .form_upload(&FormUploadRequest::new(
+                    &upload_token_provider,
                     self.object_name.as_deref(),
                     self.file_name.as_deref(),
                     self.mime_type.as_deref(),
@@ -473,11 +475,13 @@ impl<'a> UploadRequestBuilderInner<'a> {
     }
 
     fn start_resumable_upload(self, upload_source: UploadSource) -> HttpCallResult<UploadResult> {
+        let upload_token_provider = self.make_upload_token_provider();
         let init_parts_response =
             self.uploader
                 .inner
                 .api_caller
                 .init_parts(&InitPartsRequest::new(
+                    &upload_token_provider,
                     self.uploader.inner.bucket_name.as_ref(),
                     self.object_name.as_deref(),
                 ))?;
@@ -491,6 +495,7 @@ impl<'a> UploadRequestBuilderInner<'a> {
                     .inner
                     .api_caller
                     .upload_part(&UploadPartRequest::new(
+                        &upload_token_provider,
                         self.uploader.inner.bucket_name.as_ref(),
                         self.object_name.as_deref(),
                         init_parts_response.response_body().upload_id(),
@@ -516,6 +521,7 @@ impl<'a> UploadRequestBuilderInner<'a> {
                 .inner
                 .api_caller
                 .complete_parts(&CompletePartsRequest::new(
+                    &upload_token_provider,
                     self.uploader.inner.bucket_name.as_ref(),
                     self.object_name.as_deref(),
                     init_parts_response.response_body().upload_id(),
@@ -530,6 +536,16 @@ impl<'a> UploadRequestBuilderInner<'a> {
         Ok(UploadResult {
             response_body: take(complete_parts_result.response_body_mut()),
         })
+    }
+
+    #[inline]
+    fn make_upload_token_provider(&self) -> BucketOrObjectUploadTokenProvider {
+        BucketOrObjectUploadTokenProvider::new(
+            self.uploader.inner.bucket_name.to_owned(),
+            self.object_name.to_owned(),
+            Duration::from_secs(600),
+            self.uploader.inner.credential.to_owned(),
+        )
     }
 }
 
@@ -599,10 +615,77 @@ fn is_client_error_status(code: StatusCode) -> bool {
     }
 }
 
+#[derive(Debug)]
+enum BucketOrObjectUploadTokenProvider {
+    Bucket(BucketUploadTokenProvider),
+    Object(ObjectUploadTokenProvider),
+}
+
+impl BucketOrObjectUploadTokenProvider {
+    #[inline]
+    fn new(
+        bucket: String,
+        object: Option<String>,
+        upload_token_lifetime: Duration,
+        credential: Arc<dyn CredentialProvider>,
+    ) -> Self {
+        if let Some(object) = object {
+            Self::Object(ObjectUploadTokenProvider::new(
+                bucket,
+                object,
+                upload_token_lifetime,
+                credential,
+            ))
+        } else {
+            Self::Bucket(BucketUploadTokenProvider::new(
+                bucket,
+                upload_token_lifetime,
+                credential,
+            ))
+        }
+    }
+}
+
+impl UploadTokenProvider for BucketOrObjectUploadTokenProvider {
+    #[inline]
+    fn access_key(&self) -> ParseResult<Cow<str>> {
+        match self {
+            Self::Bucket(bucket_upload_token_provider) => bucket_upload_token_provider.access_key(),
+            Self::Object(object_upload_token_provider) => object_upload_token_provider.access_key(),
+        }
+    }
+
+    #[inline]
+    fn policy(&self) -> ParseResult<Cow<UploadPolicy>> {
+        match self {
+            Self::Bucket(bucket_upload_token_provider) => bucket_upload_token_provider.policy(),
+            Self::Object(object_upload_token_provider) => object_upload_token_provider.policy(),
+        }
+    }
+
+    #[inline]
+    fn to_string(&self) -> IOResult<Cow<str>> {
+        match self {
+            Self::Bucket(bucket_upload_token_provider) => bucket_upload_token_provider.to_string(),
+            Self::Object(object_upload_token_provider) => object_upload_token_provider.to_string(),
+        }
+    }
+
+    #[inline]
+    fn as_upload_token_provider(&self) -> &dyn UploadTokenProvider {
+        self
+    }
+
+    #[inline]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use digest::Digest;
+    use digest::{generic_array::GenericArray, Digest};
     use md5::Md5;
     use rand::{prelude::*, rngs::OsRng};
     use reqwest::blocking::get;
@@ -640,18 +723,7 @@ mod tests {
             bucket_domain: &str,
             size: u64,
         ) -> anyhow::Result<()> {
-            let (file, md5) = {
-                let mut file = tempfile()?;
-                let rng = Box::new(OsRng) as Box<dyn RngCore>;
-                copy(&mut rng.take(size), &mut file)?;
-                file.seek(SeekFrom::Start(0))?;
-
-                let mut hasher = Md5::new();
-                copy(&mut file, &mut hasher)?;
-                file.seek(SeekFrom::Start(0))?;
-
-                (file, hasher.finalize())
-            };
+            let (file, md5) = generate_file_with_md5(size)?;
             let result = uploader
                 .upload_file(file)
                 .object_name(format!(
@@ -675,5 +747,65 @@ mod tests {
             assert_eq!(md5, returned_md5);
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_upload_overwritten_files() -> anyhow::Result<()> {
+        env_logger::try_init().ok();
+
+        let access_key = env::var("QINIU_ACCESS_KEY")?;
+        let secret_key = env::var("QINIU_SECRET_KEY")?;
+        let bucket_name = env::var("QINIU_BUCKET_NAME")?;
+        let bucket_domain = env::var("QINIU_BUCKET_DOMAIN")?;
+        let uc_url = env::var("QINIU_UC_URL")?;
+
+        let uploader = UploaderBuilder::new(access_key, secret_key, bucket_name)
+            .uc_urls(vec![uc_url])
+            .build();
+        const SIZE: u64 = 1 << 10;
+        let key = format!(
+            "upload-{}-{}",
+            SIZE,
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
+        );
+
+        let (file, _) = generate_file_with_md5(SIZE)?;
+        let (file_2, md5_2) = generate_file_with_md5(SIZE)?;
+
+        let _ = uploader
+            .upload_file(file)
+            .object_name(key.to_owned())
+            .start()?;
+        let result = uploader.upload_file(file_2).object_name(key).start()?;
+        let key = result
+            .response_body()
+            .get("key")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        let url = format!("http://{}/{}", bucket_domain, key);
+        let mut response = get(&url)?;
+        let returned_md5 = {
+            let mut hasher = Md5::new();
+            copy(&mut response, &mut hasher)?;
+            hasher.finalize()
+        };
+        assert_eq!(md5_2, returned_md5);
+        Ok(())
+    }
+
+    #[inline]
+    fn generate_file_with_md5(
+        size: u64,
+    ) -> anyhow::Result<(File, GenericArray<u8, <Md5 as Digest>::OutputSize>)> {
+        let mut file = tempfile()?;
+        let rng = Box::new(OsRng) as Box<dyn RngCore>;
+        copy(&mut rng.take(size), &mut file)?;
+        file.seek(SeekFrom::Start(0))?;
+
+        let mut hasher = Md5::new();
+        copy(&mut file, &mut hasher)?;
+        file.seek(SeekFrom::Start(0))?;
+
+        Ok((file, hasher.finalize()))
     }
 }

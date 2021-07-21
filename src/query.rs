@@ -331,7 +331,7 @@ mod tests {
         thread::sleep,
     };
     use tokio::task::{spawn, spawn_blocking};
-    use warp::{path, reply::Response, Filter};
+    use warp::{path, reply::json as reply_json, Filter};
 
     macro_rules! starts_with_server {
         ($addr:ident, $routes:ident, $code:block) => {{
@@ -368,21 +368,17 @@ mod tests {
             .map(|params: UcQueryParams| {
                 assert_eq!(&params.ak, ACCESS_KEY);
                 assert_eq!(&params.bucket, BUCKET_NAME);
-                Response::new(
-                    json!({
-                        "hosts": [{
-                            "region": "z0",
-                            "ttl":10,
-                            "up": {
-                              "domains": [
-                                "up.qiniup.com"
-                              ]
-                            }
-                        }]
-                    })
-                    .to_string()
-                    .into(),
-                )
+                reply_json(&json!({
+                    "hosts": [{
+                        "region": "z0",
+                        "ttl":10,
+                        "up": {
+                          "domains": [
+                            "up.qiniup.com"
+                          ]
+                        }
+                    }]
+                }))
             });
         starts_with_server!(addr, routes, {
             spawn_blocking(move || -> anyhow::Result<()> {
@@ -420,21 +416,17 @@ mod tests {
                     counter.fetch_add(1, Relaxed);
                     assert_eq!(&params.ak, ACCESS_KEY);
                     assert_eq!(&params.bucket, BUCKET_NAME);
-                    Response::new(
-                        json!({
-                            "hosts": [{
-                                "region": "z0",
-                                "ttl":1,
-                                "up": {
-                                  "domains": [
-                                    "up.qiniup.com"
-                                  ]
-                                }
-                            }]
-                        })
-                        .to_string()
-                        .into(),
-                    )
+                    reply_json(&json!({
+                        "hosts": [{
+                            "region": "z0",
+                            "ttl":1,
+                            "up": {
+                              "domains": [
+                                "up.qiniup.com"
+                              ]
+                            }
+                        }]
+                    }))
                 })
         };
         starts_with_server!(addr, routes, {
