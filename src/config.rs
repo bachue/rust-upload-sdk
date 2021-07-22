@@ -71,7 +71,8 @@ pub fn is_qiniu_enabled() -> bool {
 
 fn build_http_client() -> HTTPClient {
     let mut base_timeout_ms = 30000u64;
-    let mut dial_timeout_ms = 50u64;
+    let mut dial_timeout_ms = DEFAULT_DIAL_TIMEOUT_MS;
+
     if let Some(config) = QINIU_CONFIG.read().unwrap().as_ref() {
         if let Some(value) = config.base_timeout_ms {
             if value > 0 {
@@ -94,6 +95,12 @@ fn build_http_client() -> HTTPClient {
         .build()
         .expect("Failed to build Reqwest Client")
 }
+
+#[cfg(test)]
+const DEFAULT_DIAL_TIMEOUT_MS: u64 = 1000;
+
+#[cfg(not(test))]
+const DEFAULT_DIAL_TIMEOUT_MS: u64 = 50;
 
 const QINIU_ENV: &str = "QINIU";
 
