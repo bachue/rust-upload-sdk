@@ -631,7 +631,6 @@ mod tests {
     use digest::Digest;
     use futures::{channel::oneshot::channel, TryStreamExt};
     use md5::Md5;
-    use reqwest::header::CONTENT_TYPE;
     use serde_json::json;
     use std::{
         boxed::Box,
@@ -648,7 +647,7 @@ mod tests {
         http::{HeaderValue, StatusCode},
         multipart::{FormData, Part},
         path,
-        reply::{json as reply_json, with_status as reply_with_status, Response},
+        reply::{json as reply_json, with_status as reply_with_status},
         Buf, Filter, Rejection,
     };
 
